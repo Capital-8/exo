@@ -223,6 +223,11 @@ if [[ -n $TB_BRIDGE_SERVICE ]] &&
   ! /usr/libexec/PlistBuddy -c "Print :VirtualNetworkInterfaces:Bridge:$BRIDGE_DEVICE" "$NETWORK_PREFS" >/dev/null 2>&1; then
   TB_PORTS="$(thunderbolt_ports | tr '\n' ' ')"
   if [[ -n ${TB_PORTS// /} ]]; then
+    # Leaving the exo location can leave the Thunderbolt ports down, and a
+    # port that is down can't join a bridge.
+    for port in $TB_PORTS; do
+      ifconfig "$port" up 2>/dev/null || true
+    done
     scutil --prefs >/dev/null <<EOF
 d.init
 d.add Interfaces * $TB_PORTS
