@@ -48,12 +48,13 @@ final class LocalNetworkChecker: ObservableObject {
         }
     }
 
-    /// Whether to tell the user Local Network access is off: at once when
-    /// macOS says so, otherwise only when two checks in a row suggest it, so
-    /// a network still coming up at login doesn't flash a warning.
+    /// Whether to tell the user Local Network access is off: only when two
+    /// checks in a row say so. Right after exo starts, macOS can report
+    /// access as off for a few seconds before the check works (seen on a Mac
+    /// Studio with access allowed), and a network still coming up at login
+    /// looks the same; one check shouldn't flash a warning.
     nonisolated static func accessIsOff(current: Status, previous: Status) -> Bool {
-        current == .notWorking(reason: Status.deniedByMacOSReason)
-            || (current.suggestsAccessOff && previous.suggestsAccessOff)
+        current.suggestsAccessOff && previous.suggestsAccessOff
     }
 
     private static let logger = Logger(subsystem: "io.exo.EXO", category: "LocalNetworkChecker")

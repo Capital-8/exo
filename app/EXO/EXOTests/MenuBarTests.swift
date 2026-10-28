@@ -424,14 +424,16 @@ struct ModelNamesTests {
 
 struct LocalNetworkAccessTests {
 
-    @Test func aDenialFromMacOSCountsAtOnceAndAGuessOnlyTwiceInARow() {
+    @Test func accessCountsAsOffOnlyAfterTwoChecksInARow() {
         typealias Status = LocalNetworkChecker.Status
         let denied = Status.notWorking(reason: Status.deniedByMacOSReason)
         let unreachable = Status.notWorking(reason: Status.deniedReason)
         let timedOut = Status.notWorking(reason: "Timeout (may be blocked)")
-        #expect(LocalNetworkChecker.accessIsOff(current: denied, previous: .working))
+        // macOS reports "off" for a moment right after exo starts.
+        #expect(!LocalNetworkChecker.accessIsOff(current: denied, previous: .checking))
+        #expect(LocalNetworkChecker.accessIsOff(current: denied, previous: denied))
         #expect(!LocalNetworkChecker.accessIsOff(current: unreachable, previous: .working))
-        #expect(LocalNetworkChecker.accessIsOff(current: unreachable, previous: unreachable))
+        #expect(LocalNetworkChecker.accessIsOff(current: unreachable, previous: denied))
         #expect(!LocalNetworkChecker.accessIsOff(current: timedOut, previous: timedOut))
         #expect(!LocalNetworkChecker.accessIsOff(current: .working, previous: denied))
     }
