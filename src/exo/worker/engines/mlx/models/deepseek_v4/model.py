@@ -778,6 +778,10 @@ def _set_row_lengths(
         branch.pool_lengths = list(pool_lengths)
 
 
+def _buffer_length(local) -> int:
+    return 0 if local.keys is None else local.keys.shape[2]
+
+
 class DeepseekV4Cache:
     """Cache for a single compressed-attention layer.
 
@@ -996,6 +1000,9 @@ class DeepseekV4Cache:
             not isinstance(other.local, BatchRotatingKVCache)
             and self.local.offset == other.local.offset
             and self.local._idx == other.local._idx
+            # exo fix: the same position can sit in buffers of different lengths (a one-token
+            # step grows the buffer ahead of the position); those take the batch cache below
+            and _buffer_length(self.local) == _buffer_length(other.local)
         ):
             if self.local.keys is not None or other.local.keys is not None:
                 self.local.keys = self._concat_optional(self.local.keys, other.local.keys)

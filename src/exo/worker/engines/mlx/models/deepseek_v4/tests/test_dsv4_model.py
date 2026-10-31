@@ -303,3 +303,29 @@ def test_requests_joining_and_leaving_a_running_batch_match_each_row_alone(
         np.testing.assert_allclose(
             np.concatenate(batched[i]), _alone(tiny_model, prompt, own), atol=1e-4
         )
+
+
+def test_extending_with_a_row_at_the_same_position_and_another_buffer(
+    tiny_model: Model,
+) -> None:
+    """Two requests at the same position whose window buffers differ in length (one took a
+    one-token step, which grows the buffer ahead of the position) can be batched: extending
+    one with the other used to fail on concatenating the buffers."""
+    rng = np.random.default_rng(4)
+    prompts = [rng.integers(0, 256, size=10).astype(np.int32) for _ in range(2)]
+    n_steps = 6
+    steps = rng.integers(0, 256, size=(2, n_steps, 1)).astype(np.int32)
+
+    stepped = _prefilled(tiny_model, prompts[0][:9])
+    mx.eval(tiny_model(mx.array(prompts[0][None, 9:]), cache=stepped))
+    whole = _prefilled(tiny_model, prompts[1])
+    _extend(stepped, whole)
+    batched = [
+        _log_probs(tiny_model(mx.array(steps[:, t]), cache=stepped)[:, -1])
+        for t in range(n_steps)
+    ]
+    for i, prompt in enumerate(prompts):
+        alone = _alone(tiny_model, prompt, [steps[i, t] for t in range(n_steps)])
+        np.testing.assert_allclose(
+            np.concatenate([step[i : i + 1] for step in batched]), alone, atol=1e-4
+        )
