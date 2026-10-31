@@ -106,6 +106,16 @@ class ReasoningEffortHook:
 
 @final
 @dataclass(frozen=True)
+class TemplateKwargsHook:
+    """Extra variables for a family's Jinja chat template, derived from the request (e.g.
+    a template's own name for its thinking switch)."""
+
+    applies_to: Callable[[TextGenerationTaskParams], bool]
+    kwargs: Callable[[TextGenerationTaskParams], dict[str, str]]
+
+
+@final
+@dataclass(frozen=True)
 class TokenizerLoader:
     """Loads tokenizers that mlx-lm's loader can't."""
 
@@ -122,4 +132,5 @@ class ModelFamily:
     prompt_encoder: PromptEncoder | None = None
     template_messages_hook: TemplateMessagesHook | None = None
     reasoning_effort_hook: ReasoningEffortHook | None = None
+    template_kwargs_hook: TemplateKwargsHook | None = None
     tokenizer_loader: TokenizerLoader | None = None
