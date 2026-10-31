@@ -38,6 +38,9 @@ class OutputParser:
     after_thinking_parser: bool
     # The (normalized, lowercased) model ids it applies to; others get the generic parsers.
     applies_to_model_id: Callable[[str], bool] = _any_model_id
+    # Whether exo coerces the parsed tool-call arguments to the request's tool schemas,
+    # for formats that write every value as text.
+    coerces_to_tool_schemas: bool = False
 
 
 @final
