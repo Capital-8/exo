@@ -102,10 +102,12 @@ in the prompt sets the reply and its faults:
 | `prefill=S` | seconds before the first token (0) |
 | `fault=crash\|raise\|hang\|stall at=K rank=R stall=S` | rank R's runner, just before token K: dies by SIGKILL, raises, stops forever (the supervisor's 90 s stall check ends it), or stops S seconds (10) |
 
-Faults on the way to serving (every runner of a node, each time) go in the node's stub config:
-`exo.testkit.stub.config.StubConfig(connect_seconds=, load_seconds=, warmup_seconds=,
-fault_phase="connect"|"load"|"warmup", fault=...)`, written with `write_config` to
-`cluster.nodes[i].stub_config_path`. It is read at the start of each phase.
+Delays and faults on the way to serving go in the nodes' stub config:
+`cluster.configure_stub(StubConfig(connect_seconds=, load_seconds=, warmup_seconds=,
+fault_phase="connect"|"load"|"warmup", fault=..., fault_rank=R, fault_limit=N),
+nodes=(i, ...))`. A runner reads it at the start of each phase. A fault hits only rank R if
+`fault_rank` is given, and only the first N times on each node if `fault_limit` is given, so
+the replacement runner gets through.
 
 ## What is real and what isn't
 
@@ -118,9 +120,12 @@ Replaced or simulated:
 - **The model.** `StubBuilder`/`StubEngine` (stub/engine.py) are run by exo's own bootstrap
   in place of MLX (stub/entrypoint.py). The ranks of a multi-node instance agree on every
   step's requests and cancellations over a TCP ring built from the instance's placement
-  (stub/ring.py), as the real generators agree through MLX collectives. A rank that loses
-  its ring prints MLX's ring error lines and stops, which is what exo's supervisor watches
-  for. Each rank listens on the placement's port plus its rank, because every node is on
+  (stub/ring.py), as the real generators agree through MLX collectives. The ring copies
+  what MLX 0.32.4's ring backend did on real hardware: the higher rank of each neighbour pair
+  connects, trying 5 times (1, 2, 4, 8, 16 s) before "Couldn't connect"; a rank that only
+  accepts waits forever; listeners use SO_REUSEPORT and close once the ring is up; any
+  process at the address pairs; and a lost neighbour raises "[ring] connection to a peer was
+  lost". Each rank listens on the placement's port plus its rank, because every node is on
   one machine.
 - **Discovery's transport.** Each node sends its Hellos to the harness's relay on `[::1]`
   (`EXO_DISCOVERY_ANNOUNCE_TO`, the one hook in production code,
