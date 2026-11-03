@@ -3,9 +3,13 @@
  * because they run another version of exo (GET /v1/devices-on-other-versions).
  */
 
+export type OtherVersionReason = "older_exo" | "wire_version" | "mlx_release";
+
 export type DeviceOnOtherVersion = {
-  address: string;
-  /** null: an exo from before wire versions */
+  /** Every address it was heard on: one per network interface */
+  addresses: string[];
+  reason: OtherVersionReason;
+  /** Its wire version, when it runs another one */
   wireVersion: number | null;
 };
 
@@ -16,6 +20,19 @@ export type DeviceOnOtherVersion = {
  */
 export const OTHER_VERSIONS_POLL_MS = 10_000;
 
+/**
+ * How long one ask may take. Well under the time between asks: the answer is
+ * a few hundred bytes from this node itself, so a slower one means it is busy,
+ * and the next ask will do.
+ */
+export const OTHER_VERSIONS_TIMEOUT_MS = 5_000;
+
+const REASONS: readonly OtherVersionReason[] = [
+  "older_exo",
+  "wire_version",
+  "mlx_release",
+];
+
 /** The devices in the endpoint's answer; anything unexpected reads as none. */
 export function parseDevicesOnOtherVersions(
   body: unknown,
@@ -25,34 +42,86 @@ export function parseDevicesOnOtherVersions(
   if (!Array.isArray(devices)) return [];
   return devices.flatMap((device: unknown) => {
     if (!device || typeof device !== "object") return [];
-    const { address, wireVersion } = device as Record<string, unknown>;
-    if (typeof address !== "string") return [];
+    const { addresses, reason, wireVersion } = device as Record<
+      string,
+      unknown
+    >;
+    if (
+      !Array.isArray(addresses) ||
+      addresses.length === 0 ||
+      !addresses.every((address) => typeof address === "string") ||
+      !REASONS.includes(reason as OtherVersionReason)
+    )
+      return [];
     return [
       {
-        address,
+        addresses: addresses as string[],
+        reason: reason as OtherVersionReason,
         wireVersion: typeof wireVersion === "number" ? wireVersion : null,
       },
     ];
   });
 }
 
-/** "fe80::1 runs exo wire version 2", or "... runs an older exo". */
+/** "fe80::1 (and 2 more addresses) runs exo wire version 2" */
 export function describeDevice(device: DeviceOnOtherVersion): string {
-  const version =
-    device.wireVersion === null
-      ? "an older exo"
-      : `exo wire version ${device.wireVersion}`;
-  return `${device.address} runs ${version}`;
+  const [first, ...rest] = device.addresses;
+  const where =
+    rest.length === 0
+      ? first
+      : `${first} (and ${rest.length} more address${rest.length === 1 ? "" : "es"})`;
+  switch (device.reason) {
+    case "older_exo":
+      return `${where} runs an older exo`;
+    case "wire_version":
+      return `${where} runs exo wire version ${device.wireVersion ?? "?"}`;
+    case "mlx_release":
+      return `${where} runs exo with another MLX release`;
+  }
 }
 
-export async function fetchDevicesOnOtherVersions(): Promise<
-  DeviceOnOtherVersion[]
-> {
+/** The devices exo lists, or null when it didn't answer in time. */
+export async function fetchDevicesOnOtherVersions(
+  timeoutMs: number = OTHER_VERSIONS_TIMEOUT_MS,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DeviceOnOtherVersion[] | null> {
   try {
-    const response = await fetch("/v1/devices-on-other-versions");
-    if (!response.ok) return [];
+    const response = await fetchImpl("/v1/devices-on-other-versions", {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return null;
     return parseDevicesOnOtherVersions(await response.json());
   } catch {
-    return [];
+    return null;
   }
+}
+
+/**
+ * Asks every `intervalMs`, never twice at once, so an old answer can't arrive
+ * after a newer one. A failed ask keeps the last list. Returns a stop function.
+ */
+export function pollDevicesOnOtherVersions(
+  onDevices: (devices: DeviceOnOtherVersion[]) => void,
+  intervalMs: number = OTHER_VERSIONS_POLL_MS,
+  fetchDevices: () => Promise<DeviceOnOtherVersion[] | null> = () =>
+    fetchDevicesOnOtherVersions(),
+): () => void {
+  let asking = false;
+  let stopped = false;
+  const ask = async () => {
+    if (asking || stopped) return;
+    asking = true;
+    try {
+      const devices = await fetchDevices();
+      if (devices !== null && !stopped) onDevices(devices);
+    } finally {
+      asking = false;
+    }
+  };
+  void ask();
+  const timer = setInterval(() => void ask(), intervalMs);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }

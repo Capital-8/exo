@@ -2,8 +2,7 @@
   import { exoYellow } from "$lib/utils/brand_colors";
   import {
     describeDevice,
-    fetchDevicesOnOtherVersions,
-    OTHER_VERSIONS_POLL_MS,
+    pollDevicesOnOtherVersions,
     type DeviceOnOtherVersion,
   } from "$lib/utils/other_versions";
   import {
@@ -200,14 +199,11 @@
   // Devices under this cluster's name that can't join it: they run another
   // version of exo
   let devicesOnOtherVersions = $state<DeviceOnOtherVersion[]>([]);
-  $effect(() => {
-    const poll = async () => {
-      devicesOnOtherVersions = await fetchDevicesOnOtherVersions();
-    };
-    void poll();
-    const timer = setInterval(poll, OTHER_VERSIONS_POLL_MS);
-    return () => clearInterval(timer);
-  });
+  $effect(() =>
+    pollDevicesOnOtherVersions((devices) => {
+      devicesOnOtherVersions = devices;
+    }),
+  );
 
   // Dismissed RDMA warnings stay dismissed across reloads (in this browser).
   // A new key for "RDMA not enabled": the old one was set by dismissing the
@@ -5068,13 +5064,12 @@
               version of exo, so it can't join this cluster.
             </p>
             <div class="text-xs text-white/60 mb-2">
-              <!-- One device can be heard on several of its addresses -->
               {#each devicesOnOtherVersions.slice(0, 4) as device}
                 <div class="ml-2 break-words">{describeDevice(device)}</div>
               {/each}
               {#if devicesOnOtherVersions.length > 4}
                 <div class="ml-2">
-                  and {devicesOnOtherVersions.length - 4} more addresses
+                  and {devicesOnOtherVersions.length - 4} more devices
                 </div>
               {/if}
             </div>
