@@ -18,17 +18,36 @@ bytes nodes send did not (a pydantic upgrade renders schemas differently, or a m
 never sent by name was renamed), and say why in the PR. It rewrites the hash on the ledger's
 last line.
 
-Not in the snapshot, so bump by hand when they change: discovery's packets (a test in
-``rust/networking/src/discovery.rs`` pins them), the zenoh key expressions in
-``rust/networking/src/swarm.rs``, and ``GET /node_id``, which nodes call on each other to
-check reachability.
+Besides each message's JSON schema (with ``required`` sorted, since field order isn't on the
+wire), the snapshot records what JSON schema can't show:
+
+- each model's ``strict`` and ``extra`` settings;
+- a hash of the source of every exo validator and serializer in a message, so tightening a
+  validator trips the test;
+- how messages are encoded (``TypedTopic.serialize`` and ``deserialize``);
+- how the ranks of an instance agree on tasks (``mx_all_gather_tasks``), read from its source
+  without importing MLX;
+- the zenoh revision in ``Cargo.lock``.
+
+Discovery adds the MLX release to the wire version, so nodes on different MLX releases don't
+connect either. Not covered, so bump by hand when they change:
+
+- discovery's packets (a test in ``rust/networking/src/discovery.rs`` pins them);
+- the zenoh key expressions in ``rust/networking/src/swarm.rs``;
+- ``GET /node_id``, which nodes call on each other to check reachability;
+- what an instance's ranks send each other through MLX within one MLX release: the
+  activations and top-k indices in each model's sharding code (pipeline and tensor-parallel
+  layers), and the shape of what ``mx_all_gather_tasks`` gathers.
 """
 
 import argparse
+import ast
 import hashlib
+import inspect
 import json
 import sys
-from collections.abc import Mapping
+import textwrap
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast, final, override
@@ -37,6 +56,7 @@ from pydantic import BaseModel
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue, models_json_schema
 from pydantic_core import core_schema
 
+import exo
 from exo.routing import topics
 from exo.routing.topics import PublishPolicy, TypedTopic
 from exo.routing.wire import WIRE_VERSION
@@ -55,6 +75,10 @@ _LEDGER_HEADER: Final = """\
 _NOT_ON_THE_WIRE = frozenset({"title", "description", "default", "examples"})
 # Schema keywords whose value maps names (of fields, or of definitions) to schemas
 _NAMED_SCHEMAS = frozenset({"properties", "$defs", "patternProperties"})
+# Read as text: importing it needs MLX
+_GATHER_SOURCE: Final = Path(exo.__file__).parent / "worker/engines/mlx/utils_mlx.py"
+_GATHER_FUNCTION: Final = "mx_all_gather_tasks"
+_CARGO_LOCK: Final = Path(exo.__file__).parents[2] / "Cargo.lock"
 
 
 @final
@@ -66,6 +90,10 @@ class _WireSchemaGenerator(GenerateJsonSchema):
     def model_schema(self, schema: core_schema.ModelSchema) -> JsonSchemaValue:
         inner = super().model_schema(schema)
         model = schema["cls"]
+        config = cast(Mapping[str, object], getattr(model, "model_config", {}))
+        # Not in JSON schema, but what a receiver accepts
+        inner["x-strict"] = bool(config.get("strict", False))
+        inner["x-extra"] = str(config.get("extra", "ignore"))
         if not issubclass(model, TaggedModel):
             return inner
         return {
@@ -96,17 +124,104 @@ def schema_of(models_by_topic: Mapping[str, type[BaseModel]]) -> dict[str, objec
         by_alias=False,
         schema_generator=_WireSchemaGenerator,
     )
+    code: dict[str, str] = {}
+    for model in models_by_topic.values():
+        code.update(_custom_functions(model.__pydantic_core_schema__))
     return {
         "topics": {
             topic: cast(str, roots[(model, "serialization")]["$ref"])
             for topic, model in sorted(models_by_topic.items())
         },
         "$defs": _without_annotations(cast(object, schema.get("$defs", {}))),
+        "code": dict(sorted(code.items())),
     }
 
 
 def wire_schema() -> dict[str, object]:
-    return schema_of(network_topics())
+    return {
+        **schema_of(network_topics()),
+        "encoding": {
+            f"TypedTopic.{name}": _source_hash(cast(object, getattr(TypedTopic, name)))
+            for name in ("serialize", "deserialize")
+        },
+        "collectives": {_GATHER_FUNCTION: _gather_hash()},
+        "zenoh": _zenoh_revision(),
+    }
+
+
+def _custom_functions(node: object) -> dict[str, str]:
+    """The validators and serializers written for these models (pydantic's own are left
+    out) in a pydantic core schema, by name, with a hash of each one's source. Default
+    factories are left out too: every field is always sent."""
+    found: dict[str, str] = {}
+    if isinstance(node, dict):
+        for key, value in cast(dict[str, object], node).items():
+            function = cast(object, getattr(value, "__func__", value))
+            module = cast(str, getattr(function, "__module__", "") or "")
+            if (
+                key != "default_factory"
+                and hasattr(function, "__code__")
+                and not module.startswith("pydantic")
+            ):
+                name = f"{module}:{cast(str, getattr(function, '__qualname__', '?'))}"
+                found[name] = _source_hash(function)
+            found.update(_custom_functions(value))
+    elif isinstance(node, (list, tuple)):
+        for item in cast(list[object], node):
+            found.update(_custom_functions(item))
+    return found
+
+
+def _source_hash(function: object) -> str:
+    """A short hash of a function's code, unchanged by its comments, docstring and layout."""
+    try:
+        source = textwrap.dedent(
+            inspect.getsource(cast(Callable[..., object], function))
+        )
+    except (OSError, TypeError):
+        return "unavailable"
+    try:
+        return _code_hash(ast.parse(source))
+    except SyntaxError:
+        # A lambda's source is the lines around it, which may not parse alone
+        return hashlib.sha256(source.strip().encode()).hexdigest()[:12]
+
+
+def _code_hash(tree: ast.AST) -> str:
+    for node in ast.walk(tree):
+        body = cast(list[ast.stmt] | None, getattr(node, "body", None))
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return hashlib.sha256(ast.dump(tree).encode()).hexdigest()[:12]
+
+
+def _gather_hash() -> str:
+    tree = ast.parse(_GATHER_SOURCE.read_text())
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == _GATHER_FUNCTION
+    )
+    return _code_hash(function)
+
+
+def _zenoh_revision() -> str:
+    """The zenoh version and source revision ``Cargo.lock`` pins."""
+    lock = _CARGO_LOCK.read_text()
+    block = lock[lock.index('\nname = "zenoh"\n') :]
+    block = block[: block.index("\n\n")]
+    fields = dict(
+        line.split(" = ", 1) for line in block.strip().splitlines() if " = " in line
+    )
+    version = fields["version"].strip('"')
+    source = fields.get("source", '"registry"').strip('"')
+    return f"{version} {source.rsplit('#', 1)[-1]}"
 
 
 def _without_annotations(node: object, names: bool = False) -> object:
@@ -114,7 +229,14 @@ def _without_annotations(node: object, names: bool = False) -> object:
     keys are field or definition names, kept even when one is called "title"."""
     if isinstance(node, dict):
         return {
-            key: _without_annotations(value, names=key in _NAMED_SCHEMAS and not names)
+            key: (
+                # The order fields are declared in isn't on the wire
+                sorted(cast(list[str], value))
+                if key == "required" and not names
+                else _without_annotations(
+                    value, names=key in _NAMED_SCHEMAS and not names
+                )
+            )
             for key, value in cast(dict[str, object], node).items()
             if names or key not in _NOT_ON_THE_WIRE
         }
@@ -161,11 +283,16 @@ def dump_ledger(entries: list[LedgerEntry]) -> str:
 
 
 def changes(old: Mapping[str, object], new: Mapping[str, object]) -> list[str]:
-    """What differs between two wire schemas, one line per topic or model."""
+    """What differs between two wire schemas, one line per topic, model, function or setting."""
     lines: list[str] = []
-    for section in ("topics", "$defs"):
-        before = cast(Mapping[str, object], old.get(section, {}))
-        after = cast(Mapping[str, object], new.get(section, {}))
+    for section in sorted(set(old) | set(new)):
+        before, after = old.get(section), new.get(section)
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            if before != after:
+                lines.append(f"changed {section}")
+            continue
+        before = cast(Mapping[str, object], before)
+        after = cast(Mapping[str, object], after)
         for name in sorted(set(before) | set(after)):
             if name not in after:
                 lines.append(f"removed {name}")
@@ -212,7 +339,9 @@ def main(argv: list[str] | None = None) -> int:
         for line in changes(saved, current):
             print(f"  {line}")
     if not write:
-        print(f"The wire schema or its version changed; see {__name__}'s docstring.")
+        print(
+            "The wire schema or its version changed; see the docstring of src/exo/routing/wire_schema.py."
+        )
         return 1
 
     if last.wire_version + 1 == WIRE_VERSION:

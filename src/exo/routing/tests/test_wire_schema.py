@@ -1,9 +1,17 @@
 """What nodes send each other may only change together with WIRE_VERSION (exo/routing/wire.py)."""
 
 from pathlib import Path
+from typing import Literal, cast
 
 import pytest
-from pydantic import BaseModel, Field, create_model
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    create_model,
+    field_serializer,
+    field_validator,
+)
 
 from exo.routing import topics
 from exo.routing import wire_schema as wire_schema_module
@@ -165,3 +173,135 @@ def test_changes_name_what_differs() -> None:
     after = schema_of({"t": _message("", count=(str, ...))})
     assert changes(before, after) == ["changed Message"]
     assert changes(before, before) == []
+
+
+def _at_most_one() -> type[BaseModel]:
+    class Message(FrozenModel):
+        count: int
+
+        @field_validator("count")
+        @classmethod
+        def _at_most(cls, value: int) -> int:
+            if value > 1:
+                raise ValueError("too many")
+            return value
+
+    return Message
+
+
+def _at_most_one_documented() -> type[BaseModel]:
+    class Message(FrozenModel):
+        count: int
+
+        @field_validator("count")
+        @classmethod
+        def _at_most(cls, value: int) -> int:
+            """At most one."""
+            if value > 1:  # the same check, with a comment
+                raise ValueError("too many")
+            return value
+
+    return Message
+
+
+def _at_most_two() -> type[BaseModel]:
+    class Message(FrozenModel):
+        count: int
+
+        @field_validator("count")
+        @classmethod
+        def _at_most(cls, value: int) -> int:
+            if value > 2:
+                raise ValueError("too many")
+            return value
+
+    return Message
+
+
+def _strict_message(strict: bool) -> type[BaseModel]:
+    class Message(BaseModel):
+        model_config = ConfigDict(strict=strict, extra="forbid")
+        count: int
+
+    return Message
+
+
+def _extra_message(extra: Literal["forbid", "ignore"]) -> type[BaseModel]:
+    class Message(BaseModel):
+        model_config = ConfigDict(strict=True, extra=extra)
+        count: int
+
+    return Message
+
+
+def _sent_doubled() -> type[BaseModel]:
+    class Message(FrozenModel):
+        count: int
+
+        @field_serializer("count")
+        def _send(self, value: int) -> int:
+            return value * 2
+
+    return Message
+
+
+def _sent_as_is() -> type[BaseModel]:
+    class Message(FrozenModel):
+        count: int
+
+        @field_serializer("count")
+        def _send(self, value: int) -> int:
+            return value
+
+    return Message
+
+
+def _code_hashes(model: type[BaseModel]) -> list[str]:
+    """The hashes of a message's validators and serializers. (The test's variants live in
+    differently named functions, so their names differ; real ones keep their names.)"""
+    return list(cast(dict[str, str], schema_of({"t": model})["code"]).values())
+
+
+def test_a_changed_validator_changes_the_wire() -> None:
+    # The receiver would reject what the sender sends: JSON schema can't show it
+    assert _code_hashes(_at_most_one()) != _code_hashes(_at_most_two())
+
+
+def test_a_validators_comments_and_docstring_are_not_the_wire() -> None:
+    assert _code_hashes(_at_most_one()) == _code_hashes(_at_most_one_documented())
+
+
+def test_strictness_and_extra_fields_are_part_of_the_wire() -> None:
+    assert schema_of({"t": _strict_message(True)}) != schema_of(
+        {"t": _strict_message(False)}
+    )
+    assert schema_of({"t": _extra_message("forbid")}) != schema_of(
+        {"t": _extra_message("ignore")}
+    )
+
+
+def test_a_changed_serializer_changes_the_wire() -> None:
+    assert _code_hashes(_sent_doubled()) != _code_hashes(_sent_as_is())
+
+
+def test_the_order_fields_are_declared_in_is_not_the_wire() -> None:
+    first = _message("", count=(int, ...), label=(str, ...))
+    second = _message("", label=(str, ...), count=(int, ...))
+    assert schema_of({"t": first}) == schema_of({"t": second})
+
+
+def test_the_snapshot_covers_the_encoding_the_task_gather_and_zenoh() -> None:
+    schema = wire_schema()
+    assert set(cast(dict[str, str], schema["encoding"])) == {
+        "TypedTopic.serialize",
+        "TypedTopic.deserialize",
+    }
+    assert set(cast(dict[str, str], schema["collectives"])) == {"mx_all_gather_tasks"}
+    zenoh_version, revision = cast(str, schema["zenoh"]).split()
+    assert zenoh_version.count(".") == 2 and revision
+    # The validators that real messages run are recorded
+    code = cast(dict[str, str], schema["code"])
+    assert any(
+        name.endswith("ShardAssignments.validate_runners_exist") for name in code
+    )
+    assert any(name.endswith("State._deserialize_topology") for name in code)

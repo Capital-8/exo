@@ -16,7 +16,9 @@
           "required": [
             "model_card"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -84,7 +86,9 @@
           ]
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "Backend": {
       "enum": [
@@ -116,11 +120,13 @@
         }
       },
       "required": [
-        "instance",
+        "bound_node_id",
         "bound_runner_id",
-        "bound_node_id"
+        "instance"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "CancelDownload": {
       "additionalProperties": false,
@@ -139,10 +145,12 @@
             }
           },
           "required": [
-            "target_node_id",
-            "model_id"
+            "model_id",
+            "target_node_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -173,11 +181,13 @@
             }
           },
           "required": [
-            "instance_id",
             "cancelled_task_id",
+            "instance_id",
             "runner_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -239,17 +249,19 @@
             }
           },
           "required": [
-            "model_card",
-            "device_rank",
-            "world_size",
-            "start_layer",
-            "end_layer",
-            "n_layers",
             "cfg_rank",
+            "device_rank",
+            "end_layer",
+            "model_card",
+            "n_layers",
             "pipeline_rank",
-            "pipeline_world_size"
+            "pipeline_world_size",
+            "start_layer",
+            "world_size"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -328,10 +340,12 @@
             }
           },
           "required": [
-            "command_id",
-            "chunk"
+            "chunk",
+            "command_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -354,7 +368,9 @@
           "type": "integer"
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "ComponentInfo": {
       "additionalProperties": false,
@@ -394,12 +410,14 @@
         }
       },
       "required": [
+        "can_shard",
         "component_name",
         "component_path",
-        "storage_size",
-        "can_shard"
+        "storage_size"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "ConnectToGroup": {
       "additionalProperties": false,
@@ -420,7 +438,9 @@
           "required": [
             "instance_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -449,11 +469,13 @@
         }
       },
       "required": [
-        "source",
+        "edge",
         "sink",
-        "edge"
+        "source"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "CreateInstance": {
       "additionalProperties": false,
@@ -478,7 +500,9 @@
           "required": [
             "instance"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -506,10 +530,12 @@
             }
           },
           "required": [
-            "instance_id",
-            "bound_instance"
+            "bound_instance",
+            "instance_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -533,7 +559,9 @@
           "required": [
             "model_card"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -557,7 +585,9 @@
           "required": [
             "model_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -581,7 +611,9 @@
           "required": [
             "model_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -606,10 +638,12 @@
             }
           },
           "required": [
-            "target_node_id",
-            "model_id"
+            "model_id",
+            "target_node_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -633,7 +667,9 @@
           "required": [
             "instance_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -657,7 +693,9 @@
           "required": [
             "link_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -676,10 +714,12 @@
         }
       },
       "required": [
-        "total",
-        "available"
+        "available",
+        "total"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "DownloadCompleted": {
       "additionalProperties": false,
@@ -718,7 +758,9 @@
             "shard_metadata",
             "total"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -756,11 +798,13 @@
             }
           },
           "required": [
+            "error_message",
             "node_id",
-            "shard_metadata",
-            "error_message"
+            "shard_metadata"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -801,7 +845,9 @@
             "instance_id",
             "shard_metadata"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -839,11 +885,13 @@
             }
           },
           "required": [
+            "download_progress",
             "node_id",
-            "shard_metadata",
-            "download_progress"
+            "shard_metadata"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -887,7 +935,9 @@
             "node_id",
             "shard_metadata"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -927,16 +977,18 @@
         }
       },
       "required": [
-        "total",
+        "completed_files",
         "downloaded",
         "downloaded_this_session",
-        "completed_files",
-        "total_files",
-        "speed",
         "eta_ms",
-        "files"
+        "files",
+        "speed",
+        "total",
+        "total_files"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "ElectionMessage": {
       "additionalProperties": false,
@@ -969,11 +1021,13 @@
       },
       "required": [
         "clock",
-        "seniority",
+        "commands_seen",
         "proposed_session",
-        "commands_seen"
+        "seniority"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "ErrorChunk": {
       "additionalProperties": false,
@@ -1012,10 +1066,12 @@
             }
           },
           "required": [
-            "model",
-            "error_message"
+            "error_message",
+            "model"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -1080,10 +1136,12 @@
         }
       },
       "required": [
-        "origin",
-        "command"
+        "command",
+        "origin"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "ForwarderDownloadCommand": {
       "additionalProperties": false,
@@ -1106,10 +1164,12 @@
         }
       },
       "required": [
-        "origin",
-        "command"
+        "command",
+        "origin"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "GenerationStats": {
       "properties": {
@@ -1138,13 +1198,15 @@
         }
       },
       "required": [
-        "prompt_tps",
-        "generation_tps",
-        "prompt_tokens",
         "generation_tokens",
-        "peak_memory_usage"
+        "generation_tps",
+        "peak_memory_usage",
+        "prompt_tokens",
+        "prompt_tps"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "GlobalForwarderEvent": {
       "additionalProperties": false,
@@ -1231,12 +1293,14 @@
         }
       },
       "required": [
-        "origin_idx",
+        "event",
         "origin",
-        "session",
-        "event"
+        "origin_idx",
+        "session"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "Host": {
       "additionalProperties": false,
@@ -1252,7 +1316,9 @@
         "ip",
         "port"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "ImageChunk": {
       "additionalProperties": false,
@@ -1353,13 +1419,15 @@
             }
           },
           "required": [
-            "model",
-            "data",
             "chunk_index",
-            "total_chunks",
-            "image_index"
+            "data",
+            "image_index",
+            "model",
+            "total_chunks"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -1479,10 +1547,12 @@
         }
       },
       "required": [
-        "prompt",
-        "model"
+        "model",
+        "prompt"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "ImageGenerationStats": {
       "properties": {
@@ -1509,15 +1579,17 @@
         }
       },
       "required": [
-        "seconds_per_step",
-        "total_generation_time",
-        "num_inference_steps",
-        "num_images",
-        "image_width",
         "image_height",
-        "peak_memory_usage"
+        "image_width",
+        "num_images",
+        "num_inference_steps",
+        "peak_memory_usage",
+        "seconds_per_step",
+        "total_generation_time"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "ImageGenerationTaskParams": {
       "properties": {
@@ -1672,10 +1744,12 @@
         }
       },
       "required": [
-        "prompt",
-        "model"
+        "model",
+        "prompt"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "InputChunkReceived": {
       "additionalProperties": false,
@@ -1694,10 +1768,12 @@
             }
           },
           "required": [
-            "command_id",
-            "chunk"
+            "chunk",
+            "command_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -1731,13 +1807,15 @@
             }
           },
           "required": [
-            "model",
+            "chunk_index",
             "command_id",
             "data",
-            "chunk_index",
+            "model",
             "total_chunks"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -1762,10 +1840,12 @@
         }
       },
       "required": [
-        "role",
-        "content"
+        "content",
+        "role"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "InstanceCreated": {
       "additionalProperties": false,
@@ -1790,7 +1870,9 @@
           "required": [
             "instance"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -1814,7 +1896,9 @@
           "required": [
             "instance_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -1842,11 +1926,13 @@
         }
       },
       "required": [
+        "decode_instances",
         "link_id",
-        "prefill_instances",
-        "decode_instances"
+        "prefill_instances"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "InstanceLinkCreated": {
       "additionalProperties": false,
@@ -1864,7 +1950,9 @@
           "required": [
             "link"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -1888,7 +1976,9 @@
           "required": [
             "link_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -1922,7 +2012,9 @@
           "required": [
             "instance_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2015,12 +2107,14 @@
         }
       },
       "required": [
-        "origin_idx",
+        "event",
         "origin",
-        "session",
-        "event"
+        "origin_idx",
+        "session"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "MacThunderboltConnections": {
       "additionalProperties": false,
@@ -2038,7 +2132,9 @@
           "required": [
             "conns"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2062,7 +2158,9 @@
           "required": [
             "idents"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2084,10 +2182,12 @@
             }
           },
           "required": [
-            "system_profile",
-            "memory"
+            "memory",
+            "system_profile"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2102,7 +2202,9 @@
           "type": "integer"
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "MemoryUsage": {
       "additionalProperties": false,
@@ -2131,12 +2233,14 @@
         }
       },
       "required": [
-        "ram_total",
         "ram_available",
-        "swap_total",
-        "swap_available"
+        "ram_total",
+        "swap_available",
+        "swap_total"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "MiscData": {
       "additionalProperties": false,
@@ -2151,7 +2255,9 @@
           "required": [
             "friendly_name"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2196,11 +2302,13 @@
           },
           "required": [
             "instance_id",
-            "shard_assignments",
+            "jaccl_coordinators",
             "jaccl_devices",
-            "jaccl_coordinators"
+            "shard_assignments"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2234,12 +2342,14 @@
             }
           },
           "required": [
-            "instance_id",
-            "shard_assignments",
+            "ephemeral_port",
             "hosts_by_node",
-            "ephemeral_port"
+            "instance_id",
+            "shard_assignments"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2375,15 +2485,17 @@
         }
       },
       "required": [
-        "model_id",
-        "storage_size",
-        "n_layers",
+        "backends",
         "hidden_size",
+        "model_id",
+        "n_layers",
+        "storage_size",
         "supports_tensor",
-        "tasks",
-        "backends"
+        "tasks"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "ModelTask": {
       "enum": [
@@ -2417,7 +2529,9 @@
         "ip_address",
         "port"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "NetworkInterfaceInfo": {
       "additionalProperties": false,
@@ -2440,10 +2554,12 @@
         }
       },
       "required": [
-        "name",
-        "ip_address"
+        "ip_address",
+        "name"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "NodeBackends": {
       "additionalProperties": false,
@@ -2461,7 +2577,9 @@
           "required": [
             "backends"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2475,7 +2593,9 @@
         "NodeConfig": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2496,7 +2616,9 @@
           "required": [
             "disk_usage"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2533,7 +2655,9 @@
           "required": [
             "download_progress"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2598,11 +2722,13 @@
             }
           },
           "required": [
+            "info",
             "node_id",
-            "when",
-            "info"
+            "when"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2629,7 +2755,9 @@
           "type": "string"
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "NodeNetworkInfo": {
       "additionalProperties": false,
@@ -2641,7 +2769,9 @@
           "type": "array"
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "NodeNetworkInterfaces": {
       "additionalProperties": false,
@@ -2659,7 +2789,9 @@
           "required": [
             "ifaces"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2677,7 +2809,9 @@
       "required": [
         "enabled"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "NodeThunderboltInfo": {
       "additionalProperties": false,
@@ -2689,7 +2823,9 @@
           "type": "array"
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "NodeTimedOut": {
       "additionalProperties": false,
@@ -2707,7 +2843,9 @@
           "required": [
             "node_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2757,14 +2895,16 @@
             }
           },
           "required": [
-            "model_card",
             "device_rank",
-            "world_size",
-            "start_layer",
             "end_layer",
-            "n_layers"
+            "model_card",
+            "n_layers",
+            "start_layer",
+            "world_size"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2795,12 +2935,14 @@
             }
           },
           "required": [
-            "model_card",
-            "sharding",
             "instance_meta",
-            "min_nodes"
+            "min_nodes",
+            "model_card",
+            "sharding"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2829,7 +2971,9 @@
             "processed_tokens",
             "total_tokens"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2846,7 +2990,9 @@
           "type": "integer"
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "RDMAConnection": {
       "additionalProperties": false,
@@ -2859,10 +3005,12 @@
         }
       },
       "required": [
-        "source_rdma_iface",
-        "sink_rdma_iface"
+        "sink_rdma_iface",
+        "source_rdma_iface"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "RdmaCtlStatus": {
       "additionalProperties": false,
@@ -2877,7 +3025,9 @@
           "required": [
             "enabled"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2904,7 +3054,9 @@
           "required": [
             "since_idx"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2918,7 +3070,9 @@
         "RunnerConnected": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2932,7 +3086,9 @@
         "RunnerConnecting": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2979,7 +3135,9 @@
           "required": [
             "diagnostics"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -2993,7 +3151,9 @@
         "RunnerIdle": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3007,7 +3167,9 @@
         "RunnerLoaded": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3028,7 +3190,9 @@
               "type": "integer"
             }
           },
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3055,7 +3219,9 @@
           "required": [
             "message"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3082,7 +3248,9 @@
           "required": [
             "message"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3107,7 +3275,9 @@
               ]
             }
           },
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3141,12 +3311,14 @@
             }
           },
           "required": [
-            "message",
-            "error_number",
+            "error_description",
             "error_name",
-            "error_description"
+            "error_number",
+            "message"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3173,7 +3345,9 @@
           "required": [
             "message"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3187,7 +3361,9 @@
         "RunnerRunning": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3201,7 +3377,9 @@
         "RunnerShutdown": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3215,7 +3393,9 @@
         "RunnerShuttingDown": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3277,7 +3457,9 @@
             "runner_id",
             "runner_status"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3291,7 +3473,9 @@
         "RunnerWarmingUp": {
           "additionalProperties": false,
           "properties": {},
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3393,7 +3577,9 @@
           ]
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "SamplingValues": {
       "additionalProperties": false,
@@ -3469,7 +3655,9 @@
           ]
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "SendInputChunk": {
       "additionalProperties": false,
@@ -3487,7 +3675,9 @@
           "required": [
             "chunk"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3506,10 +3696,12 @@
         }
       },
       "required": [
-        "master_node_id",
-        "election_clock"
+        "election_clock",
+        "master_node_id"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "SetInstanceLink": {
       "additionalProperties": false,
@@ -3537,11 +3729,13 @@
             }
           },
           "required": [
+            "decode_instances",
             "link_id",
-            "prefill_instances",
-            "decode_instances"
+            "prefill_instances"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3580,10 +3774,12 @@
       },
       "required": [
         "model_id",
-        "runner_to_shard",
-        "node_to_runner"
+        "node_to_runner",
+        "runner_to_shard"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "Sharding": {
       "enum": [
@@ -3615,7 +3811,9 @@
             "instance_id",
             "runner_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3633,7 +3831,9 @@
       "required": [
         "sink_multiaddr"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "StartDownload": {
       "additionalProperties": false,
@@ -3662,10 +3862,12 @@
             }
           },
           "required": [
-            "target_node_id",
-            "shard_metadata"
+            "shard_metadata",
+            "target_node_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3692,7 +3894,9 @@
           "required": [
             "instance_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3914,7 +4118,9 @@
           "$ref": "#/$defs/TopologySnapshot"
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "StateSnapshot": {
       "additionalProperties": false,
@@ -3930,11 +4136,13 @@
         }
       },
       "required": [
-        "session",
         "requester",
+        "session",
         "state"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "StaticNodeInformation": {
       "additionalProperties": false,
@@ -3956,12 +4164,14 @@
             }
           },
           "required": [
-            "model",
             "chip",
-            "os_version",
-            "os_build_version"
+            "model",
+            "os_build_version",
+            "os_version"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -3988,7 +4198,9 @@
           "type": "number"
         }
       },
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "TaskAcknowledged": {
       "additionalProperties": false,
@@ -4006,7 +4218,9 @@
           "required": [
             "task_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4030,7 +4244,9 @@
           "required": [
             "cancelled_command_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4086,10 +4302,12 @@
             }
           },
           "required": [
-            "task_id",
-            "task"
+            "task",
+            "task_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4113,7 +4331,9 @@
           "required": [
             "task_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4141,11 +4361,13 @@
             }
           },
           "required": [
-            "task_id",
+            "error_message",
             "error_type",
-            "error_message"
+            "task_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4169,7 +4391,9 @@
           "required": [
             "finished_command_id"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4208,7 +4432,9 @@
             "task_id",
             "task_status"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4258,14 +4484,16 @@
             }
           },
           "required": [
-            "model_card",
             "device_rank",
-            "world_size",
-            "start_layer",
             "end_layer",
-            "n_layers"
+            "model_card",
+            "n_layers",
+            "start_layer",
+            "world_size"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4283,7 +4511,9 @@
               "type": "string"
             }
           },
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4301,7 +4531,9 @@
               "type": "string"
             }
           },
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4550,10 +4782,12 @@
         }
       },
       "required": [
-        "model",
-        "input"
+        "input",
+        "model"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "ThunderboltBridgeInfo": {
       "additionalProperties": false,
@@ -4568,7 +4802,9 @@
           "required": [
             "status"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4600,7 +4836,9 @@
         "enabled",
         "exists"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "ThunderboltConnection": {
       "additionalProperties": false,
@@ -4613,10 +4851,12 @@
         }
       },
       "required": [
-        "source_uuid",
-        "sink_uuid"
+        "sink_uuid",
+        "source_uuid"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "ThunderboltIdentifier": {
       "additionalProperties": false,
@@ -4632,10 +4872,12 @@
         }
       },
       "required": [
-        "rdma_interface",
-        "domain_uuid"
+        "domain_uuid",
+        "rdma_interface"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "TokenChunk": {
       "additionalProperties": false,
@@ -4720,7 +4962,9 @@
             "token_id",
             "usage"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4773,7 +5017,9 @@
             "tool_calls",
             "usage"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4794,10 +5040,12 @@
         }
       },
       "required": [
-        "name",
-        "arguments"
+        "arguments",
+        "name"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "TopLogprobItem": {
       "properties": {
@@ -4822,10 +5070,12 @@
         }
       },
       "required": [
-        "token",
-        "logprob"
+        "logprob",
+        "token"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "TopologyEdgeCreated": {
       "additionalProperties": false,
@@ -4843,7 +5093,9 @@
           "required": [
             "conn"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4867,7 +5119,9 @@
           "required": [
             "conn"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4905,10 +5159,12 @@
         }
       },
       "required": [
-        "nodes",
-        "connections"
+        "connections",
+        "nodes"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": false
     },
     "TraceEventData": {
       "additionalProperties": false,
@@ -4930,13 +5186,15 @@
         }
       },
       "required": [
-        "name",
-        "start_us",
+        "category",
         "duration_us",
+        "name",
         "rank",
-        "category"
+        "start_us"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "TracesCollected": {
       "additionalProperties": false,
@@ -4961,11 +5219,13 @@
             }
           },
           "required": [
-            "task_id",
             "rank",
+            "task_id",
             "traces"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -4996,7 +5256,9 @@
             "task_id",
             "traces"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -5023,13 +5285,15 @@
         }
       },
       "required": [
-        "prompt_tokens",
         "completion_tokens",
-        "total_tokens",
+        "completion_tokens_details",
+        "prompt_tokens",
         "prompt_tokens_details",
-        "completion_tokens_details"
+        "total_tokens"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "ignore",
+      "x-strict": false
     },
     "VisionCardConfig": {
       "additionalProperties": false,
@@ -5068,7 +5332,9 @@
         "image_token_id",
         "model_type"
       ],
-      "type": "object"
+      "type": "object",
+      "x-extra": "forbid",
+      "x-strict": true
     },
     "exo__shared__types__commands__ImageEdits": {
       "additionalProperties": false,
@@ -5086,7 +5352,9 @@
           "required": [
             "task_params"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -5110,7 +5378,9 @@
           "required": [
             "task_params"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -5134,7 +5404,9 @@
           "required": [
             "task_params"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -5185,11 +5457,13 @@
             }
           },
           "required": [
-            "instance_id",
             "command_id",
+            "instance_id",
             "task_params"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -5240,11 +5514,13 @@
             }
           },
           "required": [
-            "instance_id",
             "command_id",
+            "instance_id",
             "task_params"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -5295,11 +5571,13 @@
             }
           },
           "required": [
-            "instance_id",
             "command_id",
+            "instance_id",
             "task_params"
           ],
-          "type": "object"
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
         }
       },
       "required": [
@@ -5308,6 +5586,30 @@
       "type": "object"
     }
   },
+  "code": {
+    "exo.api.types.api:ImageEditsTaskParams.normalize_size": "9b6db2dee07d",
+    "exo.api.types.api:ImageGenerationTaskParams.normalize_size": "9b6db2dee07d",
+    "exo.shared.models.model_cards:ModelCard._autodetect_vision": "759d25385472",
+    "exo.shared.models.model_cards:ModelCard._fill_vision_weights_repo": "68dd5228e75e",
+    "exo.shared.models.model_cards:ModelCard._validate_backends": "87c07e18f7f7",
+    "exo.shared.models.model_cards:ModelCard._validate_tasks": "fc33c3b44d5f",
+    "exo.shared.types.common:Host.check_port": "4db15c33a779",
+    "exo.shared.types.multiaddr:Multiaddr.validate_format": "011b71833cf5",
+    "exo.shared.types.state:State._deserialize_topology": "c9f3d40bf65b",
+    "exo.shared.types.state:State._encode_topology": "76ab97afa6ac",
+    "exo.shared.types.text_generation:ChatTemplateValue.<locals>.<lambda>": "f8b5b40c1afa",
+    "exo.shared.types.worker.instances:BoundInstance.validate_shard_exists": "5a77bba6657e",
+    "exo.shared.types.worker.runners:ShardAssignments.validate_runners_exist": "f8222d577d10",
+    "exo.utils.pydantic_ext:TaggedModel._serialize": "a081cb7cdd55",
+    "exo.utils.pydantic_ext:TaggedModel._validate": "e148573669ab"
+  },
+  "collectives": {
+    "mx_all_gather_tasks": "227f6a37d1dd"
+  },
+  "encoding": {
+    "TypedTopic.deserialize": "0254c7a5e262",
+    "TypedTopic.serialize": "cac27d43eb31"
+  },
   "topics": {
     "commands": "#/$defs/ForwarderCommand",
     "download_commands": "#/$defs/ForwarderDownloadCommand",
@@ -5315,5 +5617,6 @@
     "global_events": "#/$defs/GlobalForwarderEvent",
     "local_events": "#/$defs/LocalForwarderEvent",
     "state_snapshots": "#/$defs/StateSnapshot"
-  }
+  },
+  "zenoh": "1.9.0 aa219b84e55dfbbf55ebd827b492626a470b8ac8"
 }
