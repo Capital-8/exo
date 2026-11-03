@@ -84,6 +84,7 @@
     type NodeDownload,
   } from "$lib/utils/download_progress";
   import {
+    describeStall,
     downloadKey,
     estimateRemainingMs,
     isStalled,
@@ -2097,6 +2098,13 @@
               )
             : null;
         progress.stalled = isStalled(activity, now);
+        if (progress.stalled) {
+          progress.stalledText = describeStall(
+            activity,
+            progress.totalBytes,
+            now,
+          );
+        }
         progress.etaMs = nodeEtaMs ?? 0;
 
         perNodeMap.set(nodeId, {
@@ -3030,15 +3038,15 @@
     return [];
   }
 
-  // A download's speed, or that it's stuck and the downloader is retrying
+  // A download's speed, or that it's stuck
   function downloadSpeedText(progress: DownloadProgress | null | undefined) {
-    if (progress?.stalled) return "Stalled, retrying";
+    if (progress?.stalled) return "Stalled";
     return formatSpeed(progress?.speed ?? 0);
   }
 
   // A device's speed and time left; a stalled one has no time left to show
   function nodeDownloadText(progress: DownloadProgress | null | undefined) {
-    if (progress?.stalled) return "Stalled, retrying";
+    if (progress?.stalled) return progress.stalledText ?? "Stalled";
     return `${formatSpeed(progress?.speed ?? 0)} • ETA ${downloadEtaText(progress)}`;
   }
 
@@ -7241,7 +7249,7 @@
                         >
                         <span>
                           {#if chatLaunchDownload.stalled}
-                            Stalled, retrying
+                            Stalled
                           {:else}
                             {#if chatLaunchDownload.speed > 0}
                               {formatBytes(chatLaunchDownload.speed)}/s
