@@ -1,15 +1,22 @@
-"""The schema of every message exo nodes send each other, and its checked-in snapshot.
+"""The schema of every message exo nodes send each other, its snapshot, and its ledger.
 
-``wire_schema.json`` is the schema at ``WIRE_VERSION`` (``wire.py``).
-``tests/test_wire_schema.py`` fails when the schema generated from the code differs from it.
+``wire_schema.json`` is the schema at ``WIRE_VERSION`` (``wire.py``), and
+``wire_versions.txt`` lists every wire version with a hash of its schema, one line each,
+appended to and never rewritten. ``tests/test_wire_schema.py`` fails when the schema
+generated from the code differs from the snapshot, or its hash from the ledger's last line.
 When it does:
 
-1. bump ``WIRE_VERSION`` in ``src/exo/routing/wire.py``;
-2. run ``uv run python -m exo.routing.wire_schema --write``.
+1. bump ``WIRE_VERSION`` in ``src/exo/routing/wire.py`` to the ledger's last version + 1;
+2. run ``uv run python -m exo.routing.wire_schema --write``, which adds that version's line.
+
+Two changes that each take the next version both add a line at the end of the ledger, so git
+makes whichever merges second take a new one, instead of letting two different schemas share
+a version.
 
 Write the snapshot with ``--keep-version`` only when the generated schema changed but the
 bytes nodes send did not (a pydantic upgrade renders schemas differently, or a model that is
-never sent by name was renamed), and say why in the PR.
+never sent by name was renamed), and say why in the PR. It rewrites the hash on the ledger's
+last line.
 
 Not in the snapshot, so bump by hand when they change: discovery's packets (a test in
 ``rust/networking/src/discovery.rs`` pins them), the zenoh key expressions in
@@ -18,6 +25,7 @@ check reachability.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Mapping
@@ -35,6 +43,12 @@ from exo.routing.wire import WIRE_VERSION
 from exo.utils.pydantic_ext import FrozenModel, TaggedModel
 
 SNAPSHOT_PATH: Final = Path(__file__).with_name("wire_schema.json")
+LEDGER_PATH: Final = Path(__file__).with_name("wire_versions.txt")
+_LEDGER_HEADER: Final = """\
+# exo's wire versions: one line each, the version, then a hash of its wire schema
+# (src/exo/routing/wire_schema.py). Append only: two changes that each take the next version
+# both add a line here, so git makes the second to merge take a new one.
+"""
 
 # What a schema says that doesn't change which messages a node accepts. Defaults don't
 # matter because every field is always sent (TypedTopic.serialize).
@@ -109,24 +123,41 @@ def _without_annotations(node: object, names: bool = False) -> object:
     return node
 
 
+def schema_hash(schema: Mapping[str, object]) -> str:
+    """A short hash of a wire schema, as the ledger records it."""
+    canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def load_snapshot(path: Path = SNAPSHOT_PATH) -> dict[str, object]:
+    return cast(dict[str, object], json.loads(path.read_text()))
+
+
+def dump_snapshot(schema: Mapping[str, object]) -> str:
+    return json.dumps(schema, indent=2, sort_keys=True) + "\n"
+
+
 @final
 @dataclass(frozen=True)
-class Snapshot:
-    """A wire schema and the wire version it belongs to, as saved in ``wire_schema.json``."""
-
+class LedgerEntry:
     wire_version: int
-    schema: Mapping[str, object]
+    schema_hash: str
 
-    @classmethod
-    def load(cls, path: Path = SNAPSHOT_PATH) -> "Snapshot":
-        document = cast(dict[str, object], json.loads(path.read_text()))
-        version = document.pop("wire_version")
-        assert isinstance(version, int), f"{path.name}: wire_version isn't a number"
-        return cls(wire_version=version, schema=document)
 
-    def dumps(self) -> str:
-        document = {"wire_version": self.wire_version, **self.schema}
-        return json.dumps(document, indent=2, sort_keys=True) + "\n"
+def load_ledger(path: Path = LEDGER_PATH) -> list[LedgerEntry]:
+    entries: list[LedgerEntry] = []
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        version, hash_ = line.split()
+        entries.append(LedgerEntry(int(version), hash_))
+    return entries
+
+
+def dump_ledger(entries: list[LedgerEntry]) -> str:
+    return _LEDGER_HEADER + "".join(
+        f"{entry.wire_version} {entry.schema_hash}\n" for entry in entries
+    )
 
 
 def changes(old: Mapping[str, object], new: Mapping[str, object]) -> list[str]:
@@ -148,10 +179,12 @@ def changes(old: Mapping[str, object], new: Mapping[str, object]) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m exo.routing.wire_schema",
-        description="Check or write the snapshot of exo's wire schema.",
+        description="Check or write the snapshot and ledger of exo's wire schema.",
     )
     parser.add_argument(
-        "--write", action="store_true", help=f"write {SNAPSHOT_PATH.name}"
+        "--write",
+        action="store_true",
+        help=f"write {SNAPSHOT_PATH.name}, and the new version's line in {LEDGER_PATH.name}",
     )
     parser.add_argument(
         "--keep-version",
@@ -163,32 +196,45 @@ def main(argv: list[str] | None = None) -> int:
     write = cast(bool, args.write)
     keep_version = cast(bool, args.keep_version)
 
-    current = Snapshot(wire_version=WIRE_VERSION, schema=wire_schema())
-    saved = Snapshot.load() if SNAPSHOT_PATH.exists() else None
-    if saved == current:
+    current = wire_schema()
+    current_hash = schema_hash(current)
+    ledger = load_ledger(LEDGER_PATH)
+    last = ledger[-1]
+    saved = load_snapshot(SNAPSHOT_PATH) if SNAPSHOT_PATH.exists() else None
+    if (
+        saved == current
+        and last.wire_version == WIRE_VERSION
+        and last.schema_hash == current_hash
+    ):
         print(f"{SNAPSHOT_PATH.name} is up to date (wire version {WIRE_VERSION}).")
         return 0
     if saved is not None:
-        for line in changes(saved.schema, current.schema):
+        for line in changes(saved, current):
             print(f"  {line}")
     if not write:
-        print(f"{SNAPSHOT_PATH.name} is out of date; see this module's docstring.")
+        print(f"The wire schema or its version changed; see {__name__}'s docstring.")
         return 1
-    if (
-        saved is not None
-        and saved.schema != current.schema
-        and saved.wire_version == WIRE_VERSION
-        and not keep_version
+
+    if last.wire_version + 1 == WIRE_VERSION:
+        ledger.append(LedgerEntry(WIRE_VERSION, current_hash))
+    elif last.wire_version == WIRE_VERSION and (
+        current_hash == last.schema_hash or keep_version
     ):
+        ledger[-1] = LedgerEntry(WIRE_VERSION, current_hash)
+    else:
         print(
-            f"The wire schema changed but WIRE_VERSION is still {WIRE_VERSION}. Bump it "
-            "in src/exo/routing/wire.py first, or pass --keep-version if the bytes nodes "
-            "send didn't change.",
+            f"WIRE_VERSION is {WIRE_VERSION} and the ledger's last version is "
+            f"{last.wire_version}. Set WIRE_VERSION to {last.wire_version + 1} in "
+            "src/exo/routing/wire.py, or pass --keep-version if the bytes nodes send "
+            "didn't change.",
             file=sys.stderr,
         )
         return 1
-    SNAPSHOT_PATH.write_text(current.dumps())
-    print(f"Wrote {SNAPSHOT_PATH.name} for wire version {WIRE_VERSION}.")
+    SNAPSHOT_PATH.write_text(dump_snapshot(current))
+    LEDGER_PATH.write_text(dump_ledger(ledger))
+    print(
+        f"Wrote {SNAPSHOT_PATH.name} and {LEDGER_PATH.name} for wire version {WIRE_VERSION}."
+    )
     return 0
 
 

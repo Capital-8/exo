@@ -1,40 +1,92 @@
 """What nodes send each other may only change together with WIRE_VERSION (exo/routing/wire.py)."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import BaseModel, Field, create_model
 
 from exo.routing import topics
+from exo.routing import wire_schema as wire_schema_module
 from exo.routing.wire import WIRE_VERSION
 from exo.routing.wire_schema import (
-    Snapshot,
+    LedgerEntry,
     changes,
+    dump_ledger,
+    load_ledger,
+    load_snapshot,
     network_topics,
+    schema_hash,
     schema_of,
     wire_schema,
 )
 from exo.utils.pydantic_ext import FrozenModel, TaggedModel
 
+_WHAT_TO_DO = (
+    "Nodes on the old schema can't read the new one, so they must not connect. Set "
+    "WIRE_VERSION in src/exo/routing/wire.py to the last version in "
+    "src/exo/routing/wire_versions.txt plus 1, then run\n"
+    "  uv run python -m exo.routing.wire_schema --write\n"
+    "Devices then join only devices on the same version. If the bytes on the wire didn't "
+    "change (a pydantic upgrade renders schemas differently, a model that is never sent by "
+    "name was renamed), pass --keep-version instead of bumping, and say why in the PR."
+)
+
 
 def test_the_wire_schema_matches_its_snapshot() -> None:
-    saved = Snapshot.load()
+    saved = load_snapshot()
     current = wire_schema()
-    if current != saved.schema:
+    if current != saved:
         pytest.fail(
             "What exo nodes send each other changed:\n"
-            + "".join(f"  {line}\n" for line in changes(saved.schema, current))
-            + "Nodes on the old schema can't read the new one, so they must not connect. "
-            f"Bump WIRE_VERSION in src/exo/routing/wire.py (now {WIRE_VERSION}), then run\n"
-            "  uv run python -m exo.routing.wire_schema --write\n"
-            "Devices then join only devices on the same version. If the bytes on the wire "
-            "didn't change (a pydantic upgrade renders schemas differently, a model that is "
-            "never sent by name was renamed), pass --keep-version instead of bumping, and "
-            "say why in the PR.",
+            + "".join(f"  {line}\n" for line in changes(saved, current))
+            + _WHAT_TO_DO,
             pytrace=False,
         )
-    assert saved.wire_version == WIRE_VERSION, (
-        f"WIRE_VERSION is {WIRE_VERSION} but wire_schema.json was written for "
-        f"{saved.wire_version}: run uv run python -m exo.routing.wire_schema --write"
+
+
+def test_the_ledger_ends_with_this_wire_version_and_schema() -> None:
+    ledger = load_ledger()
+    versions = [entry.wire_version for entry in ledger]
+    # Append only: a version that two changes both took shows up twice, or out of order
+    assert versions == list(range(1, len(versions) + 1)), (
+        f"wire_versions.txt must list each version once, in order, from 1: {versions}. "
+        "Two changes took the same version: give the later one the next version."
     )
+    assert ledger[-1].wire_version == WIRE_VERSION, (
+        f"WIRE_VERSION is {WIRE_VERSION} but wire_versions.txt ends at "
+        f"{ledger[-1].wire_version}: run uv run python -m exo.routing.wire_schema --write"
+    )
+    if schema_hash(wire_schema()) != ledger[-1].schema_hash:
+        pytest.fail(
+            f"The wire schema isn't the one recorded for wire version {WIRE_VERSION}. "
+            + _WHAT_TO_DO,
+            pytrace=False,
+        )
+
+
+def test_writing_adds_the_new_versions_line_and_refuses_without_a_bump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger, snapshot = tmp_path / "wire_versions.txt", tmp_path / "wire_schema.json"
+    monkeypatch.setattr(wire_schema_module, "LEDGER_PATH", ledger)
+    monkeypatch.setattr(wire_schema_module, "SNAPSHOT_PATH", snapshot)
+    # Version 1 had another schema
+    ledger.write_text(dump_ledger([LedgerEntry(1, "0" * 16)]))
+    snapshot.write_text("{}")
+
+    monkeypatch.setattr(wire_schema_module, "WIRE_VERSION", 1)
+    assert wire_schema_module.main(["--write"]) == 1
+    monkeypatch.setattr(wire_schema_module, "WIRE_VERSION", 3)
+    assert wire_schema_module.main(["--write"]) == 1, "versions go up one at a time"
+    assert load_ledger(ledger) == [LedgerEntry(1, "0" * 16)]
+
+    monkeypatch.setattr(wire_schema_module, "WIRE_VERSION", 2)
+    assert wire_schema_module.main(["--write"]) == 0
+    assert load_ledger(ledger) == [
+        LedgerEntry(1, "0" * 16),
+        LedgerEntry(2, schema_hash(wire_schema())),
+    ]
+    assert wire_schema_module.main([]) == 0
 
 
 def test_every_topic_nodes_send_is_in_the_schema() -> None:

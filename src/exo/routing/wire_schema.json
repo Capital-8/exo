@@ -5315,6 +5315,5 @@
     "global_events": "#/$defs/GlobalForwarderEvent",
     "local_events": "#/$defs/LocalForwarderEvent",
     "state_snapshots": "#/$defs/StateSnapshot"
-  },
-  "wire_version": 1
+  }
 }

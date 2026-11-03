@@ -1,0 +1,4 @@
+# exo's wire versions: one line each, the version, then a hash of its wire schema
+# (src/exo/routing/wire_schema.py). Append only: two changes that each take the next version
+# both add a line here, so git makes the second to merge take a new one.
+1 5b038f273f427edd
