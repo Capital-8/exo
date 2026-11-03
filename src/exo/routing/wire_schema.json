@@ -314,7 +314,7 @@
           "additionalProperties": false,
           "properties": {
             "chunk": {
-              "anyOf": [
+              "oneOf": [
                 {
                   "$ref": "#/$defs/PrefillProgressChunk"
                 },
@@ -1212,7 +1212,7 @@
       "additionalProperties": false,
       "properties": {
         "event": {
-          "anyOf": [
+          "oneOf": [
             {
               "$ref": "#/$defs/TestEvent"
             },
@@ -2026,7 +2026,7 @@
       "additionalProperties": false,
       "properties": {
         "event": {
-          "anyOf": [
+          "oneOf": [
             {
               "$ref": "#/$defs/TestEvent"
             },
@@ -5601,7 +5601,8 @@
     "exo.shared.types.worker.instances:BoundInstance.validate_shard_exists": "5a77bba6657e",
     "exo.shared.types.worker.runners:ShardAssignments.validate_runners_exist": "f8222d577d10",
     "exo.utils.pydantic_ext:TaggedModel._serialize": "a081cb7cdd55",
-    "exo.utils.pydantic_ext:TaggedModel._validate": "e148573669ab"
+    "exo.utils.pydantic_ext:TaggedModel._validate": "e148573669ab",
+    "exo.utils.pydantic_ext:_tag": "dc5fef405f2a"
   },
   "collectives": {
     "mx_all_gather_tasks": "227f6a37d1dd"
