@@ -22,6 +22,9 @@ Phase = Literal["connect", "load", "warmup"]
 class StubConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
+    # Before the runner process does anything (exo's bootstrap included): a slow start, as
+    # importing MLX and the model code is from a cold disk or on a busy machine
+    start_seconds: float = 0.0
     connect_seconds: float = 0.0
     load_seconds: float = 0.0
     warmup_seconds: float = 0.0

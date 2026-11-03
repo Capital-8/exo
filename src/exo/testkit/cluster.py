@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Literal, Self, cast, final
 
 import httpx
+import psutil
 import tomlkit
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -65,7 +66,14 @@ _MASTER_LINE = re.compile(
     r"Node elected Master - (?:promoting|maintaining) self|Node (?P<other>[0-9a-f]+) elected master"
 )
 _POLL_SECONDS = 0.25
-_HTTP_TIMEOUT = 5.0
+# How long the harness waits for a node's API. Generous: on a busy machine (several clusters
+# at once, load averages of 40-50 seen) a node's event loop can take seconds to answer, and a
+# harness timeout must not pass for a failure of exo's. A /state poll that times out counts as
+# "no answer" and is polled again; a control call (launch, preview, delete) fails the test.
+_POLL_TIMEOUT = 15.0
+_CONTROL_TIMEOUT = 30.0
+# Connecting is quick unless the node is gone
+_CONNECT_TIMEOUT = 5.0
 _QUIT_TIMEOUT = 30.0
 # The environment a node runs with is only what the harness sets: none of the caller's exo
 # settings (models dirs, namespace, offline, ...) leak into a test cluster
@@ -142,6 +150,18 @@ def _install_model(home: Path, model: StubModel) -> None:
             complete=True,
         ),
     )
+
+
+_RESOURCE_TRACKER = "multiprocessing.resource_tracker"
+
+
+def _group_members(process_group: int) -> list[psutil.Process]:
+    members: list[psutil.Process] = []
+    for process in psutil.process_iter():
+        with contextlib.suppress(psutil.Error, ProcessLookupError, PermissionError):
+            if os.getpgid(process.pid) == process_group:
+                members.append(process)
+    return members
 
 
 def _free_port(kind: int, family: int, host: str) -> int:
@@ -425,7 +445,9 @@ class Cluster:
         self._stub = stub or StubConfig()
         # One keep-alive client for polling and control: a new connection per poll would
         # leave thousands of sockets in TIME_WAIT on a busy machine
-        self._http = httpx.Client(timeout=_HTTP_TIMEOUT)
+        self._http = httpx.Client(
+            timeout=httpx.Timeout(_CONTROL_TIMEOUT, connect=_CONNECT_TIMEOUT)
+        )
 
     # --- lifecycle -----------------------------------------------------------------------
 
@@ -466,7 +488,7 @@ class Cluster:
                 continue
             with contextlib.suppress(subprocess.TimeoutExpired):
                 node.process.wait(max(0.1, deadline - time.monotonic()))
-            self._signal_group(node, signal.SIGKILL)
+            self._kill_group(node)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 node.process.wait(5)
             node.status = "stopped"
@@ -589,10 +611,24 @@ class Cluster:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(node.process.pid, signal_number)
 
+    def _kill_group(self, node: Node) -> None:
+        """SIGKILL every process of the node's group (the node and its runners), except
+        multiprocessing's resource tracker: it unlinks the node's named semaphores once its
+        clients are gone. Killed with them, it leaks them for good (until the machine
+        restarts), and macOS allows 10,000 in all: a day of kill -9 scenarios on a shared
+        machine used them up."""
+        if node.process is None:
+            return
+        for _ in range(2):  # again, for a runner that was being spawned
+            for member in _group_members(node.process.pid):
+                with contextlib.suppress(psutil.Error):
+                    if _RESOURCE_TRACKER not in " ".join(member.cmdline()):
+                        member.kill()
+
     def kill(self, index: int) -> None:
         """kill -9 the node and its runners at once: a power cut, or the OS killing exo."""
         node = self.nodes[index]
-        self._signal_group(node, signal.SIGKILL)
+        self._kill_group(node)
         if node.process is not None:
             node.process.wait(10)
         node.status = "stopped"
@@ -629,7 +665,7 @@ class Cluster:
             ) from error
         took = time.monotonic() - started
         # Anything of its group still alive (a runner) outlived the node: end it
-        self._signal_group(node, signal.SIGKILL)
+        self._kill_group(node)
         node.status = "stopped"
         self.note(
             f"{node.name} exited after {took:.1f}s, code {node.process.returncode}"
@@ -684,11 +720,11 @@ class Cluster:
     # --- API -----------------------------------------------------------------------------
 
     def get(
-        self, index: int, path: str, timeout: float = _HTTP_TIMEOUT
+        self, index: int, path: str, timeout: float = _POLL_TIMEOUT
     ) -> httpx.Response:
         return self._http.get(self.nodes[index].url + path, timeout=timeout)
 
-    def state(self, index: int, timeout: float = _HTTP_TIMEOUT) -> State | None:
+    def state(self, index: int, timeout: float = _POLL_TIMEOUT) -> State | None:
         """The node's view of the cluster; None if it doesn't answer."""
         try:
             response = self.get(index, "/state", timeout=timeout)
@@ -719,7 +755,7 @@ class Cluster:
                     model_id=model, sharding=sharding, min_nodes=min_nodes
                 ).model_dump_json(),
                 headers={"content-type": "application/json"},
-                timeout=_HTTP_TIMEOUT,
+                timeout=_CONTROL_TIMEOUT,
             )
         else:
             instance = self.preview(on, model=model, sharding=sharding, via=via)
@@ -727,7 +763,7 @@ class Cluster:
                 self.nodes[via].url + "/instance",
                 content=CreateInstanceParams(instance=instance).model_dump_json(),
                 headers={"content-type": "application/json"},
-                timeout=_HTTP_TIMEOUT,
+                timeout=_CONTROL_TIMEOUT,
             )
         if response.status_code != 200:
             raise HarnessError(
@@ -755,7 +791,7 @@ class Cluster:
                 ("model_id", model),
                 *(("node_ids", node_id) for node_id in wanted),
             ],
-            timeout=_HTTP_TIMEOUT,
+            timeout=_CONTROL_TIMEOUT,
         )
         response.raise_for_status()
         previews = PlacementPreviewResponse.model_validate_json(response.content)
@@ -816,7 +852,7 @@ class Cluster:
     def delete(self, instance_id: InstanceId, via: int = 0) -> httpx.Response:
         self.note(f"delete {instance_id} via n{via}")
         return self._http.delete(
-            f"{self.nodes[via].url}/instance/{instance_id}", timeout=_HTTP_TIMEOUT
+            f"{self.nodes[via].url}/instance/{instance_id}", timeout=_CONTROL_TIMEOUT
         )
 
     def chat(
@@ -872,7 +908,7 @@ class Cluster:
             "POST",
             node.url + "/v1/chat/completions",
             json=body,
-            timeout=httpx.Timeout(_HTTP_TIMEOUT, read=timeout),
+            timeout=httpx.Timeout(_CONTROL_TIMEOUT, read=timeout),
         ) as response:
             result.status_code = response.status_code
             if response.status_code != 200:
@@ -907,7 +943,7 @@ class Cluster:
         response = httpx.post(
             node.url + "/v1/chat/completions",
             json=body,
-            timeout=httpx.Timeout(_HTTP_TIMEOUT, read=timeout),
+            timeout=httpx.Timeout(_CONTROL_TIMEOUT, read=timeout),
         )
         result.status_code = response.status_code
         if response.status_code != 200:
@@ -1008,11 +1044,19 @@ class Cluster:
         """Wait until the running nodes form one cluster: one master, every node seeing
         exactly the running nodes, and every pair able to reach the other (topology edges,
         which placement needs)."""
-        self.wait_for(
-            lambda: not self.violations(require_edges=require_edges),
-            timeout=timeout,
-            what="the running nodes to form one cluster",
-        )
+        last: list[str] = []
+
+        def formed() -> bool:
+            nonlocal last
+            last = self.violations(require_edges=require_edges)
+            return not last
+
+        try:
+            self.wait_for(
+                formed, timeout=timeout, what="the running nodes to form one cluster"
+            )
+        except HarnessTimeoutError as error:
+            raise HarnessTimeoutError(f"{error}: {last}") from error
         self.note(f"cluster formed: {[node.name for node in self.running()]}")
 
     def violations(

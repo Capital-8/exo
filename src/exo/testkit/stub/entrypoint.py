@@ -7,6 +7,7 @@ the runner does, its signal and error handling included, is exo's own code.
 """
 
 import sys
+import time
 import types
 
 import loguru
@@ -14,6 +15,7 @@ import loguru
 from exo.shared.types.events import Event
 from exo.shared.types.tasks import Task, TaskId
 from exo.shared.types.worker.instances import BoundInstance
+from exo.testkit.stub.config import read_config
 from exo.testkit.stub.engine import StubBuilder
 from exo.utils.channels import MpReceiver, MpSender
 from exo.worker.runner import bootstrap
@@ -43,6 +45,7 @@ def entrypoint(
     _logger: "loguru.Logger",
 ) -> None:
     install_stub_engine()
+    time.sleep(read_config().start_seconds)
     bootstrap.entrypoint(
         bound_instance, event_sender, task_receiver, cancel_receiver, _logger
     )
