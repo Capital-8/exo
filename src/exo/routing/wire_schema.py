@@ -37,7 +37,10 @@ connect either. Not covered, so bump by hand when they change:
 - ``GET /node_id``, which nodes call on each other to check reachability;
 - what an instance's ranks send each other through MLX within one MLX release: the
   activations and top-k indices in each model's sharding code (pipeline and tensor-parallel
-  layers), and the shape of what ``mx_all_gather_tasks`` gathers.
+  layers), and the shape of what ``mx_all_gather_tasks`` gathers;
+- a new build of MLX within one release: only the release ("0.32.4") is in the key, because
+  macOS installs MLX from a git revision and Linux the published release, so two Macs whose
+  MLX differs only in git revision still connect.
 """
 
 import argparse

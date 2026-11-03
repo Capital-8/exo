@@ -21,6 +21,11 @@ from exo.utils.pydantic_ext import FrozenModel
 
 WIRE_VERSION: Final = 1
 
+# The cluster name when none is given. Not the package version: the wire version and the MLX
+# release decide which nodes can talk, so builds that can work together find each other,
+# whatever their package version. Give a cluster its own name to keep it apart.
+DEFAULT_CLUSTER_NAME: Final = "exo"
+
 # The release part of a version: "0.32.4" of "0.32.4.dev20261030+36969c09"
 _RELEASE = re.compile(r"\d+(?:\.\d+)*")
 

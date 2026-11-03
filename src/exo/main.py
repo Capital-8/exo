@@ -27,7 +27,7 @@ from exo.download.transfer import DownloadSettings
 from exo.master.main import Master
 from exo.routing.event_router import EventRouter
 from exo.routing.router import Router, get_node_zid
-from exo.routing.wire import WIRE_VERSION, mlx_release
+from exo.routing.wire import DEFAULT_CLUSTER_NAME, WIRE_VERSION, mlx_release
 from exo.shared.constants import (
     EXO_DEFAULT_MODELS_DIR,
     EXO_EVENT_LOG_DIR,
@@ -463,7 +463,8 @@ def main_inner(args: "Args"):
 
 
 def default_namespace(environ: Mapping[str, str]) -> str:
-    """Namespace used when --namespace isn't given.
+    """Namespace used when --namespace isn't given: one name for every version of exo,
+    since the wire version and the MLX release decide which nodes can talk.
 
     EXO_LIBP2P_NAMESPACE is still honoured (with a deprecation warning at
     startup) so clusters isolated before the zenoh migration stay isolated.
@@ -471,7 +472,7 @@ def default_namespace(environ: Mapping[str, str]) -> str:
     return (
         environ.get("EXO_ZENOH_NAMESPACE")
         or environ.get("EXO_LIBP2P_NAMESPACE")
-        or __version__
+        or DEFAULT_CLUSTER_NAME
     )
 
 
@@ -584,8 +585,8 @@ class Args(FrozenModel):
             default=default_namespace(os.environ),
             dest="namespace",
             help="Discovery namespace, nodes with different namespaces will not connect, "
-            "nor will nodes that run different wire versions of exo "
-            "(env: EXO_ZENOH_NAMESPACE, defaults to the exo version).",
+            "nor will nodes that run incompatible versions of exo "
+            f"(env: EXO_ZENOH_NAMESPACE, defaults to {DEFAULT_CLUSTER_NAME!r}).",
         )
         parser.add_argument(
             "--zenoh-port",

@@ -42,13 +42,23 @@ def _run_pair(
     second_version: int,
     first_mlx: str | None = _MLX,
     second_mlx: str | None = _MLX,
+    package_versions: tuple[str, str] | None = None,
 ) -> list[dict[str, object]]:
-    """Run two nodes in one fresh namespace until the window ends; return their reports."""
+    """Run two nodes until the window ends; return their reports. They share a fresh
+    namespace, or with ``package_versions`` take exo's default namespace as if they
+    were those versions of exo (the discovery port keeps them apart from other nodes)."""
     namespace = f"exo-wire-gate-test-{uuid.uuid4().hex[:12]}"
     discovery_port = _free_port(socket.SOCK_DGRAM)
 
-    def start(identity: str, version: int, mlx: str | None) -> subprocess.Popen[str]:
+    def start(
+        identity: str, version: int, mlx: str | None, package_version: str | None
+    ) -> subprocess.Popen[str]:
         mlx_argument = ["--mlx-release", mlx] if mlx is not None else []
+        namespace_arguments = (
+            ["--namespace", "default", "--package-version", package_version]
+            if package_version is not None
+            else ["--namespace", namespace]
+        )
         peer = subprocess.Popen(
             [
                 sys.executable,
@@ -56,8 +66,7 @@ def _run_pair(
                 "exo.routing.tests.wire_gate_peer",
                 "--identity",
                 identity,
-                "--namespace",
-                namespace,
+                *namespace_arguments,
                 "--wire-version",
                 str(version),
                 "--zenoh-port",
@@ -75,9 +84,10 @@ def _run_pair(
         assert peer.stdout.readline().strip() == "ready"
         return peer
 
+    first_package, second_package = package_versions or (None, None)
     peers = [
-        start(_FIRST_ID, first_version, first_mlx),
-        start(_SECOND_ID, second_version, second_mlx),
+        start(_FIRST_ID, first_version, first_mlx, first_package),
+        start(_SECOND_ID, second_version, second_mlx, second_package),
     ]
     reports: list[dict[str, object]] = []
     for peer in peers:
@@ -127,3 +137,14 @@ def test_nodes_on_different_mlx_releases_never_connect() -> None:
 def test_a_node_without_mlx_connects_to_one_with_it() -> None:
     first, second = _run_pair(WIRE_VERSION, WIRE_VERSION, "0.32.4", None)
     assert first["heard_after"] is not None and second["heard_after"] is not None
+
+
+@pytest.mark.slow
+def test_nodes_on_different_package_versions_with_the_same_wire_connect() -> None:
+    # The wire version and the MLX release decide; exo's package version, which used to
+    # be its default cluster name, no longer splits a cluster
+    first, second = _run_pair(
+        WIRE_VERSION, WIRE_VERSION, package_versions=("0.3.70", "0.4.0")
+    )
+    assert first["heard_after"] is not None and second["heard_after"] is not None
+    assert first["other_versions"] == second["other_versions"] == []

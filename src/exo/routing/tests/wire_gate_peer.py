@@ -67,7 +67,13 @@ async def run(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--identity", required=True)
-    parser.add_argument("--namespace", required=True)
+    parser.add_argument(
+        "--namespace", required=True, help="or 'default': exo's default"
+    )
+    parser.add_argument(
+        "--package-version",
+        help="the package version to give exo before asking it for its default namespace",
+    )
     parser.add_argument("--wire-version", type=int, required=True)
     parser.add_argument(
         "--mlx-release", help="the MLX release it claims; none if left out"
@@ -76,10 +82,18 @@ def main() -> None:
     parser.add_argument("--discovery-port", type=int, required=True)
     parser.add_argument("--seconds", type=float, required=True)
     args = parser.parse_args()
+    namespace = cast(str, args.namespace)
+    if namespace == "default":
+        import exo.main
+
+        package_version = cast(str | None, args.package_version)
+        if package_version is not None:
+            exo.main.__version__ = package_version
+        namespace = exo.main.default_namespace({})
     asyncio.run(
         run(
             cast(str, args.identity),
-            cast(str, args.namespace),
+            namespace,
             cast(int, args.wire_version),
             cast(str | None, args.mlx_release),
             cast(int, args.zenoh_port),
