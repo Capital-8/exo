@@ -139,7 +139,7 @@ To run separate clusters on one network, for example a test cluster next to your
 - in the app: open **Settings** › **Cluster** from the menu bar icon and fill in **Cluster name** (leave it on Automatic for the default);
 - from source: run `uv run exo --namespace my-cluster`, or set `EXO_ZENOH_NAMESPACE=my-cluster`.
 
-A custom name replaces the version, so devices with the same custom name try to connect even when their versions differ. Keep them on the same version of exo. The cluster name in use is logged at startup ("Discovery namespace: …").
+Devices also need the same *wire version*: a number exo bumps whenever what devices send each other changes. A custom name doesn't override it, so devices with the same custom name but different versions of exo don't connect either; before, they connected and then stopped making progress. A device that sees another version on the network under its cluster name logs "a device at … runs another version of exo" and lists it at `GET /v1/devices-on-other-versions`. The cluster name and wire version in use are logged at startup ("Discovery namespace: …").
 
 #### Uninstalling the macOS app
 

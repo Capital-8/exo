@@ -27,6 +27,7 @@ from exo.download.transfer import DownloadSettings
 from exo.master.main import Master
 from exo.routing.event_router import EventRouter
 from exo.routing.router import Router, get_node_zid
+from exo.routing.wire import WIRE_VERSION
 from exo.shared.constants import (
     EXO_DEFAULT_MODELS_DIR,
     EXO_EVENT_LOG_DIR,
@@ -141,6 +142,7 @@ class Node:
                 command_sender=router.sender(topics.COMMANDS),
                 download_command_sender=router.sender(topics.DOWNLOAD_COMMANDS),
                 election_receiver=router.receiver(topics.ELECTION_MESSAGES),
+                devices_on_other_versions=router.devices_on_other_versions,
             )
         else:
             api = None
@@ -418,7 +420,10 @@ def main_inner(args: "Args"):
         logger.warning(
             "EXO_LIBP2P_NAMESPACE is deprecated - use EXO_ZENOH_NAMESPACE instead"
         )
-    logger.info(f"Discovery namespace: {args.namespace}")
+    logger.info(
+        f"Discovery namespace: {args.namespace} (wire version {WIRE_VERSION}: only nodes "
+        "with both the same connect)"
+    )
 
     if args.offline:
         logger.info("Running in OFFLINE mode — no internet checks, local models only")
@@ -578,7 +583,8 @@ class Args(FrozenModel):
             type=str,
             default=default_namespace(os.environ),
             dest="namespace",
-            help="Discovery namespace, nodes with different namespaces will not connect "
+            help="Discovery namespace, nodes with different namespaces will not connect, "
+            "nor will nodes that run different wire versions of exo "
             "(env: EXO_ZENOH_NAMESPACE, defaults to the exo version).",
         )
         parser.add_argument(

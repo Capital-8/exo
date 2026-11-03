@@ -1,10 +1,12 @@
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::ext::{ByteArrayExt as _, FutureExt, PyErrExt as _};
 use crate::ext::{ResultExt as _, TokioMpscSenderExt as _};
 use futures_lite::{Stream, StreamExt as _};
 use networking::swarm::{FromSwarm, Swarm, ToSwarm, create_swarm};
+use networking::wire::OtherVersions;
 use networking::{Session, is_valid_zid};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -19,6 +21,7 @@ pub struct PyNetworkingHandle {
     // channels
     pub to_swarm: mpsc::Sender<ToSwarm>,
     pub swarm: Arc<Mutex<Pin<Box<dyn Stream<Item = FromSwarm> + Send>>>>,
+    pub other_versions: OtherVersions,
 }
 
 #[gen_stub_pyclass_complex_enum]
@@ -43,6 +46,7 @@ impl From<FromSwarm> for PyFromSwarm {
 impl PyNetworkingHandle {
     pub fn from_session(session: Session) -> Self {
         let (to_swarm, from_client) = mpsc::channel(1024);
+        let other_versions = session.other_versions.clone();
         let swarm = Swarm {
             from_client,
             session,
@@ -50,6 +54,7 @@ impl PyNetworkingHandle {
         PyNetworkingHandle {
             swarm: Arc::new(Mutex::new(swarm.into_stream())),
             to_swarm,
+            other_versions,
         }
     }
 }
@@ -63,10 +68,13 @@ impl PyNetworkingHandle {
 
     // ---- Lifecycle management methods ----
 
+    /// Starts this node's networking. It connects only to nodes with the same `namespace` and
+    /// the same `wire_version`.
     #[staticmethod]
     pub fn new(
         identity: &str,
         namespace: &str,
+        wire_version: u32,
         listen_port: u16,
         discovery_service_port: u16,
     ) -> PyResult<PyNetworkingHandle> {
@@ -89,16 +97,30 @@ impl PyNetworkingHandle {
             .block_on(create_swarm(
                 identity,
                 namespace,
+                wire_version,
                 from_client,
                 listen_port,
                 discovery_service_port,
             ))
             .pyerr()?;
 
+        let other_versions = swarm.session.other_versions.clone();
         Ok(PyNetworkingHandle {
             swarm: Arc::new(Mutex::new(swarm.into_stream())),
             to_swarm,
+            other_versions,
         })
+    }
+
+    /// The devices discovery hears in this namespace that run another wire version, so can't
+    /// join: `(address, wire_version)`, where a wire version of `None` is an exo from before
+    /// wire versions. A device is listed until its Hellos have stopped for 30 s.
+    pub fn devices_on_other_versions(&self) -> Vec<(String, Option<u32>)> {
+        self.other_versions
+            .current(Instant::now())
+            .into_iter()
+            .map(|(address, version)| (address.to_string(), version.number()))
+            .collect()
     }
 
     #[gen_stub(override_return_type(

@@ -25,6 +25,7 @@ from exo.utils.task_group import TaskGroup
 
 from .connection_message import ConnectionMessage
 from .topics import CONNECTION_MESSAGES, PublishPolicy, TypedTopic
+from .wire import WIRE_VERSION, DeviceOnOtherVersion
 
 
 # A significant current limitation of the TopicRouter is that it is not capable
@@ -118,10 +119,12 @@ class Router:
         namespace: str,
         listen_port: int,
         discovery_service_port: int,
+        wire_version: int = WIRE_VERSION,
     ) -> "Router":
+        """Networking that connects only to nodes with the same namespace and wire version."""
         return cls(
             handle=NetworkingHandle.new(
-                identity, namespace, listen_port, discovery_service_port
+                identity, namespace, wire_version, listen_port, discovery_service_port
             )
         )
 
@@ -144,6 +147,13 @@ class Router:
         self.topic_routers[topic.topic] = cast(TopicRouter[FrozenModel], router)
         if self._tg.is_running():
             await self._networking_subscribe(topic)
+
+    def devices_on_other_versions(self) -> list[DeviceOnOtherVersion]:
+        """Devices on the network in this namespace that can't join: they run another wire version."""
+        return [
+            DeviceOnOtherVersion(address=address, wire_version=wire_version)
+            for address, wire_version in self._net.devices_on_other_versions()
+        ]
 
     def sender[T: FrozenModel](self, topic: TypedTopic[T]) -> Sender[T]:
         router = self.topic_routers.get(topic.topic, None)

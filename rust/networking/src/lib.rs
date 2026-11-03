@@ -8,9 +8,11 @@ use zenoh_plugin_trait::PluginsManager;
 pub use zenoh::{Config, config::ZenohId};
 
 use crate::discovery::Discovery;
+use crate::wire::{ClusterKey, OtherVersions};
 
 pub mod discovery;
 pub mod swarm;
+pub mod wire;
 
 pub fn is_valid_zid(identity: &str) -> bool {
     let mut iter = identity.chars();
@@ -51,18 +53,18 @@ pub fn cfg(identity: &str, listen_port: u16) -> Result<zenoh::Config> {
     Ok(cfg)
 }
 
+/// Opens this node's session. It connects only to nodes with the same `namespace` and the same
+/// `wire_version` (exo's WIRE_VERSION, see `wire`).
 pub async fn open(
     cfg: zenoh::Config,
     namespace: &str,
+    wire_version: u32,
     listen_port: u16,
     discovery_service_port: u16,
 ) -> Result<Session> {
     assert!(listen_port != 0, "must used defined listen port");
-    let namespace: [u8; 8] = {
-        blake3::hash(namespace.as_bytes()).as_bytes()[..8]
-            .try_into()
-            .expect("8 is equal to 8")
-    };
+    let cluster = ClusterKey::new(namespace, wire_version);
+    let other_versions = OtherVersions::default();
     let mut plugins = PluginsManager::static_plugins_only();
     plugins.declare_static_plugin::<StoragesPlugin, _>("storage_manager", true);
     let mut runtime = zenoh::internal::runtime::RuntimeBuilder::new(cfg)
@@ -71,8 +73,14 @@ pub async fn open(
         .await?;
     let z = zenoh::session::init(runtime.clone().into()).await?;
     runtime.start().await?;
-    let mut discovery =
-        Discovery::new(z.zid(), namespace, listen_port, discovery_service_port).await?;
+    let mut discovery = Discovery::new(
+        z.zid(),
+        cluster,
+        other_versions.clone(),
+        listen_port,
+        discovery_service_port,
+    )
+    .await?;
     let _jh = Arc::new(AbortOnDrop(tokio::task::spawn(async move {
         loop {
             let Ok(discovered) = discovery.next().await.inspect_err(|e| {
@@ -105,7 +113,11 @@ pub async fn open(
             });
         }
     })));
-    Ok(Session { z, _jh })
+    Ok(Session {
+        z,
+        other_versions,
+        _jh,
+    })
 }
 
 struct AbortOnDrop(JoinHandle<()>);
@@ -118,5 +130,7 @@ impl Drop for AbortOnDrop {
 #[derive(Clone)]
 pub struct Session {
     pub z: ZSession,
+    /// Devices discovery hears in this namespace that run another wire version.
+    pub other_versions: OtherVersions,
     _jh: Arc<AbortOnDrop>,
 }

@@ -226,12 +226,20 @@ async fn on_message(
 pub async fn create_swarm(
     identity: &str,
     namespace: &str,
+    wire_version: u32,
     from_client: mpsc::Receiver<ToSwarm>,
     listen_port: u16,
     discovery_service_port: u16,
 ) -> Result<Swarm> {
     let cfg = crate::cfg(identity, listen_port)?;
-    let session = crate::open(cfg, namespace, listen_port, discovery_service_port).await?;
+    let session = crate::open(
+        cfg,
+        namespace,
+        wire_version,
+        listen_port,
+        discovery_service_port,
+    )
+    .await?;
     Ok(Swarm {
         session,
         from_client,
