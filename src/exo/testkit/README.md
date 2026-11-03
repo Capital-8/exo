@@ -77,7 +77,7 @@ Nodes are addressed by index; `n0` has the largest id, so it is the first master
 | chats | `.chat(prompt, via=i, stream=True, max_tokens=None)` returns a `ChatResult`; `.chat_in_background(...)` returns a handle with `.result(timeout)` |
 | results | `ChatResult.ok`, `.error`, `.content`, `.finish_reason`, `.problems()` (empty when every token is right; a reply cut short by an error must be an exact prefix), `.longest_gap`, `.summary()` |
 | state | `.state(i)` (the node's `/state` as exo's `State`), `.master()`, `.masters()`, `.wait_for_master(timeout, other_than=)`, `.violations()`, `.wait_until_consistent(timeout)`, `.instance_nodes(id)` |
-| helpers | `.wait_for(condition, timeout=, what=)` polls every 0.25 s and returns the condition's first truthy value: None, False, 0 and empty values mean "not yet" (it raises `HarnessError` on timeout, and at once if a node died by itself); `.note(message)` (adds a line to the timeline) |
+| helpers | `.wait_for(predicate, timeout=, what=)` polls every 0.25 s until the predicate returns `True` (it must return a bool; anything else raises `TypeError`); `.wait_for_value(get, timeout=, what=)` returns the first value that isn't `None` (0, `False`, `[]` are values). Both raise `HarnessTimeoutError` on timeout, and `NodeExitedError` at once if a node died by itself. `.note(message)` adds a line to the timeline |
 
 `violations()` checks the invariants: one master that every running node follows; every
 running node sees exactly the running nodes (no ghosts, none missing) and the same

@@ -4,19 +4,39 @@ from pathlib import Path
 
 import pytest
 
-from exo.testkit.cluster import ChatResult, Cluster, HarnessError
+from exo.testkit.cluster import ChatResult, Cluster, HarnessTimeoutError
 from exo.testkit.stub.directives import expected_reply
 
 
-@pytest.mark.parametrize("falsy", [None, False, 0, "", [], {}])
-def test_wait_for_keeps_waiting_while_the_condition_is_falsy(
-    tmp_path: Path, falsy: object
-) -> None:
+def test_wait_for_ends_only_when_the_predicate_is_true(tmp_path: Path) -> None:
     cluster = Cluster(1, tmp_path)
-    answers: list[object] = [falsy, falsy, ["done"]]
-    assert cluster.wait_for(lambda: answers.pop(0), timeout=5, what="it") == ["done"]
-    with pytest.raises(HarnessError, match="waiting for nothing"):
-        cluster.wait_for(lambda: falsy, timeout=0.3, what="nothing")
+    answers = [False, False, True]
+    cluster.wait_for(lambda: answers.pop(0), timeout=5, what="it")
+    assert answers == []
+    with pytest.raises(HarnessTimeoutError, match="waiting for nothing"):
+        cluster.wait_for(lambda: False, timeout=0.3, what="nothing")
+
+
+@pytest.mark.parametrize("not_a_bool", [None, 0, 1, "", [], ["x"]])
+def test_wait_for_refuses_a_predicate_that_returns_something_else(
+    tmp_path: Path, not_a_bool: object
+) -> None:
+    """The trap: an empty list or a 0 isn't "not yet", it's a value."""
+    cluster = Cluster(1, tmp_path)
+    with pytest.raises(TypeError, match="wait_for_value"):
+        cluster.wait_for(lambda: not_a_bool, timeout=5, what="it")  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize("value", [0, False, "", [], {}])
+def test_wait_for_value_returns_any_value_but_none(
+    tmp_path: Path, value: object
+) -> None:
+    """A master at index 0, an empty list of violations: values, not "not yet"."""
+    cluster = Cluster(1, tmp_path)
+    answers: list[object] = [None, None, value]
+    assert cluster.wait_for_value(lambda: answers.pop(0), timeout=5, what="it") == value
+    with pytest.raises(HarnessTimeoutError):
+        cluster.wait_for_value(lambda: None, timeout=0.3, what="nothing")
 
 
 def _result(content: str, finish: str | None, error: str | None = None) -> ChatResult:

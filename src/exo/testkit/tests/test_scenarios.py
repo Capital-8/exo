@@ -66,6 +66,7 @@ def test_every_node_serves_every_token(make_cluster: MakeCluster) -> None:
     every node's API, streamed and not, and every token arrives, in order."""
     cluster = make_cluster(3)
     assert cluster.master() == 0
+    assert cluster.wait_for_master(timeout=5) == 0
     cluster.launch(on=(1,))
     cluster.launch(on=(0, 2))
     handles = [

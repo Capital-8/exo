@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Self, final
+from typing import Literal, Self, cast, final
 
 import httpx
 import tomlkit
@@ -723,7 +723,7 @@ class Cluster:
                 f"launch refused ({response.status_code}): {response.text}"
             )
         self.note(f"launch {model} on {on or 'any'} via n{via}")
-        return self.wait_for(
+        return self.wait_for_value(
             lambda: next(iter(set(self._instances(via)) - before), None),
             timeout=timeout,
             what="the new instance to appear",
@@ -912,17 +912,37 @@ class Cluster:
 
     # --- waiting and checking ------------------------------------------------------------
 
-    def wait_for[T](
-        self, condition: Callable[[], T | None], *, timeout: float, what: str
-    ) -> T:
-        """Poll until `condition` returns a truthy value, and return it: None, False, 0, an
-        empty list or string all mean "not yet". Raises HarnessError after `timeout`, and at
+    def wait_for(
+        self, predicate: Callable[[], bool], *, timeout: float, what: str
+    ) -> None:
+        """Poll until `predicate()` returns True. It must return a bool: anything else raises
+        TypeError at once (an empty list or a 0 means nothing here; for values, use
+        wait_for_value). Raises HarnessTimeoutError after `timeout`, and NodeExitedError at
         once if a node the harness believes is running has exited on its own."""
+
+        def done() -> bool | None:
+            # Checked at run time too: callers outside the type checker get it wrong
+            result = cast(object, predicate())
+            if not isinstance(result, bool):
+                raise TypeError(
+                    f"wait_for({what!r}) needs a predicate returning bool, got "
+                    f"{type(result).__name__}; use wait_for_value for values"
+                )
+            return True if result else None
+
+        self.wait_for_value(done, timeout=timeout, what=what)
+
+    def wait_for_value[T](
+        self, get: Callable[[], T | None], *, timeout: float, what: str
+    ) -> T:
+        """Poll until `get()` returns something other than None, and return it. Only None
+        means "not yet": 0, False, an empty list are values. Raises HarnessTimeoutError after
+        `timeout`, and NodeExitedError at once if a node exited on its own."""
         deadline = time.monotonic() + timeout
         while True:
             self.check_alive()
-            value = condition()
-            if value:
+            value = get()
+            if value is not None:
                 return value
             if time.monotonic() > deadline:
                 raise HarnessTimeoutError(
@@ -967,7 +987,7 @@ class Cluster:
                 return None
             return master
 
-        master = self.wait_for(agreed, timeout=timeout, what="one master")
+        master = self.wait_for_value(agreed, timeout=timeout, what="one master")
         self.note(f"master is {self.nodes[master].name}")
         return master
 
