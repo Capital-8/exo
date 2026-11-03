@@ -2,8 +2,9 @@
 
 All traffic between nodes passes through here, on the IPv6 loopback:
 
-- discovery: every node's multicast Hello comes to the relay (see interpose.c). The relay hands
-  it to every other node, and hands each reply (WhatsUp) back with its zenoh port replaced by
+- discovery: every node sends its Hellos to the relay instead of the multicast group (the
+  EXO_DISCOVERY_ANNOUNCE_TO hook in rust/networking/src/discovery.rs). The relay hands each one
+  to every other node, and hands each reply (WhatsUp) back with its zenoh port replaced by
   the port of a proxy for that pair. So when exo's discovery dials a peer, it dials the proxy;
 - zenoh: one TCP proxy per ordered pair of nodes forwards to the peer's zenoh port;
 - stub ring links: the stub runners connect through one more proxy that is told the pair.
@@ -36,7 +37,8 @@ from typing import final
 
 from exo.testkit.network_table import CutMode
 
-DISCOVERY_RELAY_ENV = "EXO_TESTKIT_DISCOVERY_RELAY"
+# rust/networking/src/discovery.rs: where a node sends its Hellos instead of the multicast group
+ANNOUNCE_TO_ENV = "EXO_DISCOVERY_ANNOUNCE_TO"
 
 # rust/networking/src/discovery.rs: a 4-byte header (b"EXO", kind), then the message
 _MAGIC = b"EXO"
@@ -240,7 +242,7 @@ class NetSim:
         origin = self._node_by_discovery_port(source_port)
         if origin is None or not _is(data, _HELLO_KIND, _HELLO_SIZE):
             return
-        # A node sends each Hello once per network interface: pass it on once
+        # Pass each Hello on once, however many copies arrive
         seen = (origin.name, data[4:12])
         if seen in self._seen_hellos:
             return

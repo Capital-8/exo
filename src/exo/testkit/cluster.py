@@ -11,7 +11,6 @@ import contextlib
 import os
 import re
 import secrets
-import shutil
 import signal
 import socket
 import subprocess
@@ -44,7 +43,7 @@ from exo.shared.types.tasks import TaskStatus
 from exo.shared.types.worker.instances import Instance, InstanceId, InstanceMeta
 from exo.shared.types.worker.runners import RunnerReady, RunnerRunning
 from exo.shared.types.worker.shards import Sharding
-from exo.testkit.netsim import DISCOVERY_RELAY_ENV, NetSim
+from exo.testkit.netsim import ANNOUNCE_TO_ENV, NetSim
 from exo.testkit.network_table import (
     NETWORK_TABLE_ENV,
     Cut,
@@ -61,7 +60,6 @@ from exo.testkit.stub.config import (
 from exo.testkit.stub.directives import expected_reply
 
 STUB_MODEL = ModelId("exo-testkit/stub-8l")
-_INTERPOSER_SOURCE = Path(__file__).with_name("interpose.c")
 _MASTER_LINE = re.compile(
     r"Node elected Master - (?:promoting|maintaining) self|Node (?P<other>[0-9a-f]+) elected master"
 )
@@ -70,7 +68,7 @@ _HTTP_TIMEOUT = 5.0
 _QUIT_TIMEOUT = 30.0
 # The environment a node runs with is only what the harness sets: none of the caller's exo
 # settings (models dirs, namespace, offline, ...) leak into a test cluster
-_INHERITED_ENV_PREFIXES = ("EXO_", "HF_", "DYLD_", "LD_PRELOAD")
+_INHERITED_ENV_PREFIXES = ("EXO_", "HF_")
 # ...except where exo finds its own files, when it runs from a bundle or a CI checkout
 _PASSED_THROUGH_ENV = ("EXO_RESOURCES_DIR",)
 
@@ -124,31 +122,6 @@ def _install_model(home: Path, model: StubModel) -> None:
             complete=True,
         ),
     )
-
-
-def build_interposer(cache_dir: Path) -> Path:
-    """Compile interpose.c (once per version of it) and return the library."""
-    source = _INTERPOSER_SOURCE.read_bytes()
-    suffix = "dylib" if sys.platform == "darwin" else "so"
-    digest = uuid.uuid5(uuid.NAMESPACE_OID, source.hex()).hex[:12]
-    library = cache_dir / f"exo-testkit-interpose-{digest}.{suffix}"
-    if library.exists():
-        return library
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    compiler = shutil.which("clang") or shutil.which("cc")
-    if compiler is None:
-        raise HarnessError("the test kit needs a C compiler (clang or cc)")
-    flags = ["-dynamiclib"] if sys.platform == "darwin" else ["-shared", "-fPIC"]
-    temporary = library.with_suffix(f".{os.getpid()}.tmp")
-    subprocess.run(
-        [compiler, *flags, "-O2", "-o", str(temporary), str(_INTERPOSER_SOURCE)],
-        check=True,
-        capture_output=True,
-    )
-    if sys.platform != "darwin":
-        pass
-    os.replace(temporary, library)
-    return library
 
 
 def _free_port(kind: int, family: int, host: str) -> int:
@@ -426,7 +399,6 @@ class Cluster:
                 )
             )
         self._stub = stub or StubConfig()
-        self._interposer: Path | None = None
 
     # --- lifecycle -----------------------------------------------------------------------
 
@@ -440,7 +412,6 @@ class Cluster:
         """Start every node and wait until they form one cluster with one master."""
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "dashboard").mkdir(exist_ok=True)
-        self._interposer = build_interposer(self.root.parent / ".testkit-cache")
         self.network.start()
         for node in self.nodes:
             self.network.add_node(node.name, node.discovery_port, node.zenoh_port)
@@ -487,8 +458,6 @@ class Cluster:
             if not key.startswith(_INHERITED_ENV_PREFIXES)
             or key in _PASSED_THROUGH_ENV
         }
-        assert self._interposer is not None
-        preload = "DYLD_INSERT_LIBRARIES" if sys.platform == "darwin" else "LD_PRELOAD"
         environment.update(
             {
                 "EXO_HOME": str(node.home),
@@ -498,8 +467,7 @@ class Cluster:
                 "HF_HOME": str(node.home / "hf"),
                 "HF_HUB_OFFLINE": "1",
                 "PYTHONUNBUFFERED": "1",
-                preload: str(self._interposer),
-                DISCOVERY_RELAY_ENV: str(self.network.relay_port),
+                ANNOUNCE_TO_ENV: f"[::1]:{self.network.relay_port}",
                 RING_PROXY_ENV: str(self.network.ring_proxy_port),
                 STUB_CONFIG_ENV: str(node.stub_config_path),
                 NETWORK_TABLE_ENV: str(self.network_table_path),

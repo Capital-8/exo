@@ -34,6 +34,13 @@ const STALL_THRESHOLD: Duration = Duration::from_secs(5);
 /// peer's existing session instead of starting a new one, and when the peer had already
 /// dropped that session it never receives our declarations again: a one-way split.
 const STALL_HOLD_OFF: Duration = Duration::from_secs(12);
+/// Test hook: when set, Hellos go to these unicast addresses (comma-separated, such as
+/// `[::1]:40000`) instead of the multicast group. exo's single-machine cluster tests point it at
+/// their discovery relay: nodes on one machine can't find each other by multicast, because they
+/// share the discovery port and a unicast reply to it reaches only one of them (and on macOS a
+/// process without Local Network access can't send multicast at all). Outside those tests it is
+/// unset and discovery is unchanged.
+pub const ANNOUNCE_TO_ENV: &str = "EXO_DISCOVERY_ANNOUNCE_TO";
 
 pub struct Discovery {
     sock: Arc<UdpSocket>,
@@ -48,6 +55,8 @@ pub struct Discovery {
     blocked_since_warning: Mutex<Option<Instant>>,
     other_cluster_notice: Mutex<OtherClusterNotice>,
     stall_guard: StallGuard,
+    /// Where Hellos go instead of the multicast group (`ANNOUNCE_TO_ENV`), if anywhere
+    announce_to: Option<Vec<SocketAddrV6>>,
     _sync: Mutex<WatchHandle>,
 }
 
@@ -142,6 +151,7 @@ impl Discovery {
             blocked_since_warning: Mutex::new(None),
             other_cluster_notice: Mutex::new(OtherClusterNotice::default()),
             stall_guard: StallGuard::default(),
+            announce_to: announce_to_from_env(),
             _sync,
         })
     }
@@ -288,7 +298,10 @@ impl Discovery {
         }
         .alloc();
 
-        let addrs = self.ifaces.lock().clone();
+        let addrs = match &self.announce_to {
+            Some(targets) => targets.clone(),
+            None => self.ifaces.lock().clone(),
+        };
         debug!("announcing Hello({nonce:?}) to {addrs:?}");
         match send_to_all(&self.sock, &buf, &addrs).await {
             Ok(()) => {
@@ -320,6 +333,30 @@ impl Discovery {
         }
         Ok(())
     }
+}
+
+fn announce_to_from_env() -> Option<Vec<SocketAddrV6>> {
+    let value = std::env::var(ANNOUNCE_TO_ENV).ok()?;
+    let targets = parse_announce_to(&value);
+    if targets.is_empty() {
+        warn!("{ANNOUNCE_TO_ENV}={value:?} names no IPv6 socket address; using multicast");
+        return None;
+    }
+    info!("discovery announces to {targets:?} instead of multicast ({ANNOUNCE_TO_ENV})");
+    Some(targets)
+}
+
+fn parse_announce_to(value: &str) -> Vec<SocketAddrV6> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| {
+            part.parse()
+                .inspect_err(|e| warn!("ignoring {ANNOUNCE_TO_ENV} entry {part:?}: {e}"))
+                .ok()
+        })
+        .collect()
 }
 
 /// Ignores peers for a while after this process stalled (see `STALL_HOLD_OFF`).
@@ -528,6 +565,19 @@ mod tests {
         assert!(!notice.due(start + OTHER_CLUSTER_NOTICE_INTERVAL - Duration::from_millis(1)));
         assert!(notice.due(start + OTHER_CLUSTER_NOTICE_INTERVAL));
         assert!(!notice.due(start + OTHER_CLUSTER_NOTICE_INTERVAL + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn announce_to_takes_ipv6_socket_addresses_and_skips_the_rest() {
+        let targets = parse_announce_to(" [::1]:40000, nonsense, 127.0.0.1:5,[::1]:40001,");
+        assert_eq!(
+            targets,
+            vec![
+                SocketAddrV6::new(Ipv6Addr::LOCALHOST, 40000, 0, 0),
+                SocketAddrV6::new(Ipv6Addr::LOCALHOST, 40001, 0, 0),
+            ]
+        );
+        assert!(parse_announce_to("").is_empty());
     }
 
     #[test]
