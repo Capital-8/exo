@@ -70,8 +70,11 @@ _POLL_SECONDS = 0.25
 # at once, load averages of 40-50 seen) a node's event loop can take seconds to answer, and a
 # harness timeout must not pass for a failure of exo's. A /state poll that times out counts as
 # "no answer" and is polled again; a control call (launch, preview, delete) fails the test.
+# exo answers a launch or a stop only once it shows in the node's state, sending it again
+# meanwhile, and gives up with a 503 after its CLUSTER_COMMAND_TIMEOUT (46 s, #2581): a
+# control call must wait longer than that.
 _POLL_TIMEOUT = 15.0
-_CONTROL_TIMEOUT = 30.0
+_CONTROL_TIMEOUT = 60.0
 # Connecting is quick unless the node is gone
 _CONNECT_TIMEOUT = 5.0
 _QUIT_TIMEOUT = 30.0
@@ -791,8 +794,9 @@ class Cluster:
         )
 
     def create(self, instance: Instance, *, via: int = 0) -> None:
-        """Send one prepared instance (from `preview`) to be created, without waiting for it:
-        for scenarios that must time the launch exactly."""
+        """Ask for one prepared instance (from `preview`) to be created. exo answers once the
+        instance shows in `via`'s state (or with a 503 when it gives up); this doesn't wait
+        for it to be ready."""
         response = self._post_instance(instance, via)
         if response.status_code != 200:
             raise HarnessError(

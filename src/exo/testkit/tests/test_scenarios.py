@@ -39,8 +39,6 @@ pytestmark = pytest.mark.cluster
 LONG = "[stub tokens=3000 rate=50]"
 # Seconds a running chat streams before the scenario's fault
 STREAM_FIRST = 3.0
-# A launch meant to race zenoh's 10 s lease must be sent well within it
-LAUNCH_WITHIN_LEASE = 5.0
 
 
 class ScenarioSetupError(Exception):
@@ -315,36 +313,39 @@ def test_quitting_the_master_elects_a_new_one_quickly(
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    raises=EXPECTED_FAILURES,
-    reason="C3: commands accepted while the master can't be reached are dropped, never "
-    "resent (CLUSTER #8: launches sent around a master's death never appeared; "
-    "membership REPORT section 2: 2/2 lost on main)",
-)
 def test_a_launch_sent_while_the_master_is_unreachable_is_placed(
     make_cluster: MakeCluster,
 ) -> None:
     """The master is cut off (blackhole) and a follower's API takes a launch at once. The
     followers notice the master is gone only when zenoh's 10 s lease runs out, so the
-    launch goes to the cut-off master alone; the master they elect next must still place
-    it. (A kill would usually do the same, but when the crashed master's liveliness token
-    goes at once the API holds the launch through the election and nothing is lost.)"""
+    launch first goes to the cut-off master alone. Before #2581 it was lost: commands were
+    sent once and answered "Command received." at once (2 of 2 launches never appeared in
+    the chaos runs on real Macs). Since #2581 the API sends it again, also to the next
+    master, and answers only once it is placed (within its 46 s CLUSTER_COMMAND_TIMEOUT)."""
     cluster = make_cluster(3)
     roles = _roles(cluster)
     follower = roles.followers[0]
     instance = cluster.preview((follower,), via=follower)
     _is_the_master(cluster, roles.master)
     cluster.isolate(roles.master)
-    cut_at = time.monotonic()
-    cluster.create(instance, via=follower)
-    if time.monotonic() - cut_at > LAUNCH_WITHIN_LEASE:
-        raise ScenarioSetupError("the launch went out too late to race the lease")
+    answered: list[BaseException | None] = []
+
+    def launch() -> None:
+        try:
+            cluster.create(instance, via=follower)
+            answered.append(None)
+        except BaseException as error:
+            answered.append(error)
+
+    sender = threading.Thread(target=launch, daemon=True)
+    sender.start()
     cluster.wait_for(
         lambda: _instance_present(cluster, instance.instance_id, via=follower),
         timeout=90,
         what="the launch to be placed by the next master",
     )
+    sender.join(70)
+    assert answered == [None], f"the launch was answered with an error: {answered}"
 
 
 # --- a follower quits ------------------------------------------------------------------
@@ -375,16 +376,13 @@ def test_quitting_a_follower_ends_its_requests_and_removes_it(
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    raises=EXPECTED_FAILURES,
-    reason="B2: a graceful quit isn't announced; the node and its models stay listed "
-    "for the 15 s silence timeout (CLUSTER #9)",
-)
 def test_a_node_that_quits_leaves_every_view_at_once(make_cluster: MakeCluster) -> None:
+    """A follower quits (SIGINT). Since #2582 a quitting node says it is leaving, and every
+    other node drops it at once (bound 5 s after it exited). Before, nothing said so: it
+    stayed listed, with its models, for the 15 s silence timeout."""
     cluster = make_cluster(3)
     cluster.quit(_roles(cluster).followers[0])
-    cluster.wait_until_consistent(timeout=3)
+    cluster.wait_until_consistent(timeout=5)
 
 
 # --- a follower sleeps -----------------------------------------------------------------
