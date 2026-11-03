@@ -129,8 +129,10 @@ Replaced or simulated:
   connects, trying 5 times (1, 2, 4, 8, 16 s) before "Couldn't connect"; a rank that only
   accepts waits forever; listeners use SO_REUSEPORT and close once the ring is up; any
   process at the address pairs; and a lost neighbour raises "[ring] connection to a peer was
-  lost". Each rank listens on the placement's port plus its rank, because every node is on
-  one machine.
+  lost". MLX gives every rank the placement's port; here every node is on one machine, so
+  each rank gets a port of its own from the harness, the same for every runner of that rank
+  and leased machine-wide (a lock file per port), so clusters running side by side never
+  share one.
 - **Discovery's transport.** Each node sends its Hellos to the harness's relay on `[::1]`
   (`EXO_DISCOVERY_ANNOUNCE_TO`, the one hook in production code,
   rust/networking/src/discovery.rs). On one machine multicast can't work: nodes share the

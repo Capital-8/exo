@@ -28,14 +28,18 @@ cluster's network.
 
 import asyncio
 import contextlib
+import fcntl
+import random
 import socket
 import struct
+import tempfile
 import threading
 from collections import deque
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from functools import partial
-from typing import cast, final
+from pathlib import Path
+from typing import TextIO, cast, final
 
 from exo.testkit.network_table import CutMode
 
@@ -137,6 +141,8 @@ class NetSim:
         self._proxy_ports: dict[tuple[str, str], int] = {}
         # (dialler, target) -> the port where dialler reaches target's API through the pair
         self.api_proxy_ports: dict[tuple[str, str], int] = {}
+        # (instance, rank) -> the lease on that rank's stub ring port
+        self._ring_ports: dict[tuple[str, int], _PortLease] = {}
         self._servers: list[asyncio.Server] = []
         self._pair_sockets: dict[tuple[str, str], asyncio.DatagramTransport] = {}
         self._relay: asyncio.DatagramTransport | None = None
@@ -208,6 +214,8 @@ class NetSim:
             server.close()
         for transport in self._pair_sockets.values():
             transport.close()
+        for lease in self._ring_ports.values():
+            lease.release()
         if self._relay is not None:
             self._relay.close()
         others = [
@@ -302,6 +310,17 @@ class NetSim:
             bytes(reply), ("::1", origin.discovery_port)
         )
 
+    def ring_port(self, instance_id: str, rank: int) -> int:
+        """The port the stub runner of `rank` of an instance listens on: the same for every
+        runner of that rank (as MLX's ring gives every rank the placement's port), and
+        leased machine-wide, so clusters running side by side never share one."""
+        key = (instance_id, rank)
+        lease = self._ring_ports.get(key)
+        if lease is None:
+            lease = _lease_port()
+            self._ring_ports[key] = lease
+        return lease.port
+
     def _api_connection_handler(self, dialler: str, target: str):
         async def handle(
             reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -329,8 +348,15 @@ class NetSim:
     ) -> None:
         try:
             header = await asyncio.wait_for(reader.readline(), _RING_HEADER_TIMEOUT)
-            _, source_id, destination_id, host, port = header.decode().split()
-        except (TimeoutError, ValueError, UnicodeDecodeError):
+            words = header.decode().split()
+            if words and words[0] == "PORT":
+                _, instance_id, rank = words
+                writer.write(f"{self.ring_port(instance_id, int(rank))}\n".encode())
+                await writer.drain()
+                writer.close()
+                return
+            _, source_id, destination_id, host, port = words
+        except (TimeoutError, ValueError, UnicodeDecodeError, OSError):
             writer.transport.abort()
             return
         names = {node.node_id: node.name for node in self._nodes.values()}
@@ -400,6 +426,46 @@ class NetSim:
             pass
         finally:
             writer.transport.abort()
+
+
+# Stub ring ports come from below the OS's ephemeral range (from 32768 on Linux, 49152 on
+# macOS), which it never hands out by itself; leases on them are lock files in the temp dir
+_RING_PORTS = range(20000, 32768)
+_LEASES = Path(tempfile.gettempdir()) / "exo-testkit-ports"
+
+
+@final
+@dataclass(eq=False)
+class _PortLease:
+    """A port this process may use until it releases it or exits: an flock on the port's
+    lock file, which every harness on the machine respects."""
+
+    port: int
+    lock: TextIO
+
+    def release(self) -> None:
+        self.lock.close()
+
+
+def _lease_port() -> _PortLease:
+    _LEASES.mkdir(exist_ok=True)
+    start = random.randrange(len(_RING_PORTS))
+    for offset in range(len(_RING_PORTS)):
+        port = _RING_PORTS[(start + offset) % len(_RING_PORTS)]
+        lock = (_LEASES / f"{port}.lock").open("a")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock.close()  # another harness holds it
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("0.0.0.0", port))
+            except OSError:
+                lock.close()  # something else is using it
+                continue
+        return _PortLease(port, lock)
+    raise RuntimeError("no free stub ring port")
 
 
 async def _until_flowing(pair: _Pair, link: _Link) -> bool:

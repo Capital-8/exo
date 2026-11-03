@@ -1,6 +1,7 @@
 """The simulated network on its own: discovery relay, proxied links, and both kinds of cut."""
 
 import contextlib
+import fcntl
 import socket
 import threading
 from collections.abc import Iterator
@@ -9,7 +10,7 @@ from typing import cast
 
 import pytest
 
-from exo.testkit.netsim import NetSim
+from exo.testkit.netsim import _LEASES, NetSim  # pyright: ignore[reportPrivateUsage]
 
 _HELLO = b"EXO\x00" + b"N" * 8 + b"S" * 8
 
@@ -145,3 +146,39 @@ def test_a_reset_tears_connections_down_and_refuses_new_ones(
     _connect(port).close()
     connection.close()
     refused.close()
+
+
+def _ring_port(netsim: NetSim, instance: str, rank: int) -> int:
+    with socket.create_connection(
+        ("::1", netsim.ring_proxy_port), timeout=2
+    ) as harness:
+        harness.sendall(f"PORT {instance} {rank}\n".encode())
+        return int(harness.recv(16).decode().strip())
+
+
+def test_stub_ring_ports_are_one_per_rank_and_never_shared_between_clusters() -> None:
+    first, second = NetSim(), NetSim()
+    first.start()
+    second.start()
+    try:
+        port = _ring_port(first, "instance", 0)
+        assert _ring_port(first, "instance", 0) == port
+        assert _ring_port(first, "instance", 1) != port
+        assert _ring_port(second, "instance", 0) != port
+
+        # The rank's runners can listen on it, with MLX's SO_REUSEPORT...
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        listener.bind(("0.0.0.0", port))
+        listener.listen()
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            accepted = listener.accept()[0]
+            accepted.close()
+        listener.close()
+        # ...and every other harness on the machine skips it while it is leased
+        with (_LEASES / f"{port}.lock").open("a") as other, pytest.raises(OSError):
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        first.stop()
+        second.stop()

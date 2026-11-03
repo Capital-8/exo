@@ -170,6 +170,25 @@ def test_node_to_node_api_traffic_goes_through_the_simulated_network(
     assert httpx.get(url, timeout=10).json() == sink.node_id
 
 
+@pytest.mark.slow
+def test_two_clusters_on_one_machine_never_meet(make_cluster: MakeCluster) -> None:
+    """Two clusters at once, each serving a two-node instance: their stub runners never
+    share a ring port (a collision once paired runners of different clusters)."""
+    clusters = [make_cluster(2), make_cluster(2)]
+    for cluster in clusters:
+        cluster.launch(on=(0, 1))
+    handles = [
+        cluster.chat_in_background(
+            f"cluster {index} [stub tokens=100 rate=100]", via=index % 2
+        )
+        for index, cluster in enumerate(clusters)
+    ]
+    for handle in handles:
+        _ok(handle.result(60))
+    for cluster in clusters:
+        assert cluster.violations() == []
+
+
 # --- a follower dies -------------------------------------------------------------------
 
 

@@ -16,8 +16,11 @@ It copies what MLX 0.32.4's ring backend was seen to do on real hardware:
   it is this instance's current runner;
 - a rank whose neighbour goes away fails with "[ring] connection to a peer was lost".
 
-One deviation, because every node is on one machine: MLX gives every rank the same port, and
-here each rank listens on that port plus its rank.
+One deviation, because every node is on one machine: MLX gives every rank the placement's
+port, and here each rank gets a port of its own from the harness (exo.testkit.netsim), the
+same for every runner of that rank and unique on the machine, so clusters running side by
+side never share one. Without the harness (unit tests) it is the placement's port plus the
+rank.
 """
 
 import errno
@@ -85,7 +88,7 @@ class Ring:
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            listener.bind(("0.0.0.0", instance.ephemeral_port + rank))
+            listener.bind(("0.0.0.0", _port(instance, rank, proxy_port)))
             listener.listen(4)
             try:
                 while len(links) < len(accept_from):
@@ -100,7 +103,7 @@ class Ring:
         for peer in dial_to:
             links[peer] = _dial(
                 host=hosts[peer].ip,
-                port=instance.ephemeral_port + peer,
+                port=_port(instance, peer, proxy_port),
                 proxy_port=proxy_port,
                 source=bound_instance.bound_node_id,
                 destination=nodes[peer],
@@ -152,6 +155,15 @@ class Ring:
                 raise RingError(errno.ECONNRESET, "the peer closed the connection")
             received += chunk
         return bytes(received)
+
+
+def _port(instance: MlxRingInstance, rank: int, proxy_port: int | None) -> int:
+    """Where `rank` of the instance listens."""
+    if proxy_port is None:
+        return instance.ephemeral_port + rank
+    with socket.create_connection(("::1", proxy_port)) as harness:
+        harness.sendall(f"PORT {instance.instance_id} {rank}\n".encode())
+        return int(_read_line(harness))
 
 
 def _read_line(connection: socket.socket) -> str:
