@@ -32,6 +32,7 @@
     instances,
     runners,
     downloads,
+    nodeDisk,
     placementPreviews,
     selectedPreviewModelId,
     isLoadingPreviews,
@@ -78,6 +79,11 @@
   import { cubicInOut, cubicOut } from "svelte/easing";
   import { onMount } from "svelte";
   import { getNodesWithModelDownloaded } from "$lib/utils/downloads";
+  import {
+    checkDiskFit,
+    describeDiskFit,
+    type DiskFit,
+  } from "$lib/utils/disk_fit";
   import type { ChatUploadedFile } from "$lib/types/files";
 
   const chatStarted = $derived(hasStartedChat());
@@ -87,6 +93,7 @@
   const instanceData = $derived(instances());
   const runnersData = $derived(runners());
   const downloadsData = $derived(downloads());
+  const nodeDiskData = $derived(nodeDisk());
   const previewsData = $derived(placementPreviews());
   const selectedModelId = $derived(selectedPreviewModelId());
   const loadingPreviews = $derived(isLoadingPreviews());
@@ -1026,6 +1033,8 @@
   >([]);
   type ModelMemoryFitStatus =
     | "fits_now"
+    // Fits in memory, but its devices haven't the disk space to download it
+    | "no_disk_space"
     | "fits_cluster_capacity"
     | "too_large";
 
@@ -1499,6 +1508,39 @@
     );
   });
 
+  // Whether a model can be downloaded on the devices it would run on: each
+  // device downloads it into its models directory (see disk_fit.ts)
+  function getModelDiskFit(model: {
+    id: string;
+    name?: string;
+    storage_size_megabytes?: number;
+  }): DiskFit {
+    if (!data) return { fits: true };
+    const downloadedOn = new Set(
+      getNodesWithModelDownloaded(downloadsData, model.id),
+    );
+    return checkDiskFit(
+      getModelSizeGB(model) * 1024 * 1024 * 1024,
+      Object.entries(data.nodes).map(([nodeId, node]) => {
+        const total =
+          node.macmon_info?.memory?.ram_total ?? node.system_info?.memory ?? 0;
+        const used = node.macmon_info?.memory?.ram_usage ?? 0;
+        return {
+          name: node.friendly_name || nodeId.slice(0, 8),
+          freeDiskBytes: nodeDiskData[nodeId]?.available?.inBytes ?? null,
+          freeMemoryBytes: total - used,
+          hasModel: downloadedOn.has(nodeId),
+        };
+      }),
+    );
+  }
+
+  // Why a model doesn't fit, when memory isn't the reason
+  function getModelFitNote(modelId: string): string | null {
+    const model = models.find((m) => m.id === modelId);
+    return model ? describeDiskFit(getModelDiskFit(model)) : null;
+  }
+
   function getModelMemoryFitStatus(model: {
     id: string;
     name?: string;
@@ -1506,12 +1548,21 @@
   }): ModelMemoryFitStatus {
     const modelSizeGB = getModelSizeGB(model);
     if (modelSizeGB <= availableMemoryGB()) {
-      return "fits_now";
+      return getModelDiskFit(model).fits ? "fits_now" : "no_disk_space";
     }
     if (modelSizeGB <= clusterTotalMemoryGB()) {
       return "fits_cluster_capacity";
     }
     return "too_large";
+  }
+
+  // Whether the devices have the disk space to download a model (or have it)
+  function canDownloadModel(model: {
+    id: string;
+    name?: string;
+    storage_size_megabytes?: number;
+  }): boolean {
+    return getModelDiskFit(model).fits;
   }
 
   // Check if a model has enough memory to run
@@ -3664,7 +3715,11 @@
     }));
     const autoModel = chosenModelId
       ? (modelInfos.find((m) => m.id === chosenModelId) ?? null)
-      : pickAutoModel(modelInfos, totalMem);
+      : // Only models the devices have the disk space to download
+        pickAutoModel(
+          modelInfos.filter((m) => canDownloadModel(m)),
+          totalMem,
+        );
 
     if (!autoModel) {
       addToast({
@@ -5813,6 +5868,7 @@
           const model = models.find((m) => m.id === modelId);
           return model ? getModelMemoryFitStatus(model) : "too_large";
         }}
+        {getModelFitNote}
         onSelect={(modelId) => {
           isModelPickerOpen = false;
           onboardingLaunchModel(modelId);
@@ -7261,7 +7317,7 @@
               class="flex-1 overflow-y-auto flex items-center justify-center px-8 py-6"
             >
               <ChatModelSelector
-                models={models.map((m) => ({
+                models={models.filter(canDownloadModel).map((m) => ({
                   id: m.id,
                   name: m.name ?? "",
                   base_model: m.base_model ?? "",
@@ -7840,6 +7896,7 @@
       const model = models.find((m) => m.id === modelId);
       return model ? getModelMemoryFitStatus(model) : "too_large";
     }}
+    {getModelFitNote}
     onSelect={(modelId) => {
       if (modelPickerContext === "chat") {
         handleChatPickerSelect(modelId);
