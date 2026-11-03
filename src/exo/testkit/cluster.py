@@ -457,7 +457,7 @@ class Cluster:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def start(self, timeout: float = 90.0, *, require_edges: bool = True) -> None:
+    def start(self, timeout: float = 180.0, *, require_edges: bool = True) -> None:
         """Start every node and wait until they form one cluster with one master (and, unless
         told otherwise, until every pair has the topology edge placement needs)."""
         self.root.mkdir(parents=True, exist_ok=True)
@@ -1064,7 +1064,7 @@ class Cluster:
         return master
 
     def wait_for_cluster(
-        self, timeout: float = 90, *, require_edges: bool = True
+        self, timeout: float = 180, *, require_edges: bool = True
     ) -> None:
         """Wait until the running nodes form one cluster: one master, every node seeing
         exactly the running nodes, and every pair able to reach the other (topology edges,

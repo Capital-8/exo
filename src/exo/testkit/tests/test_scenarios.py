@@ -460,15 +460,17 @@ def test_a_runner_that_crashes_mid_reply_ends_it_and_its_instance_recovers(
 
 @pytest.mark.slow
 @pytest.mark.xfail(
-    strict=True,
+    # Not strict: on main the outcome is a race (deleted in 3 of 5 runs, recovered in 2), so
+    # an XPASS on main doesn't fail the run. The fix makes it pass every time; its PR
+    # deletes this marker.
+    strict=False,
     raises=EXPECTED_FAILURES,
     reason="Found by this harness: after one rank crashes, each node stops its fresh "
     "replacement runner while the other node's runner still shows RunnerFailed, and "
-    "stopping it marks it Failed in turn: the nodes ping-pong. When runners take longer "
-    "to start than the 3 s shutdown grace (importing MLX and the model code can), every "
-    "replacement is killed before it can stop cleanly, and after 6 rounds the worker gives "
-    "up and deletes the instance. A fast-set run at load average ~50 showed the same "
-    "ping-pong without any start delay",
+    "stopping it marks it Failed in turn: the nodes ping-pong. Whether it starts depends "
+    "on whether the surviving rank fails on the lost ring before it is told to shut down; "
+    "with runners that take longer than the 3 s shutdown grace to start, it often ends "
+    "with the worker giving up and deleting the instance",
 )
 def test_a_rank_crash_with_slow_runner_starts_leaves_its_instance_serving(
     make_cluster: MakeCluster,
