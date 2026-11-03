@@ -58,20 +58,23 @@ def take_ready_topk(batch: GenerationBatch) -> BatchTopKLogprobs:
 def _lazy_cache_metadata(cache: list[object]) -> list[mx.array]:
     """The per-sequence bookkeeping arrays a cache updates lazily at every step: an
     ArraysCache's left padding and lengths, which a linear attention layer moves on by the
-    number of tokens it processed.
+    number of tokens it processed, and a batch KV cache's offsets.
 
-    Most of them are never read during decode (a model builds its linear attention mask
-    from one layer's cache), so unless they are evaluated each update chains onto the last
-    and keeps every earlier one alive, each holding a small Metal buffer. A model with
-    linear attention layers (Qwen3.5) then reaches Metal's resource limit, and the runner
-    crashes: within an hour of steady generation."""
+    Not all of them are read during decode: a model builds its linear attention mask from
+    one layer's cache, and MiniMax M3 positions the keys of its sparse-attention index cache
+    with the attention cache's offsets, never reading the index cache's own. Unless they are
+    evaluated, each update chains onto the last and keeps every earlier one alive, each
+    holding a small Metal buffer, until the runner reaches Metal's resource limit and
+    crashes: within an hour of steady generation with Qwen3.5's linear attention layers,
+    and for MiniMax M3 (one buffer per layer per step) after about 8,000 decode steps of a
+    batch that never empties."""
     arrays: list[mx.array] = []
     for entry in cache:
         sub_caches = cast(list[object] | None, getattr(entry, "caches", None))
         if sub_caches is not None:
             arrays.extend(_lazy_cache_metadata(sub_caches))
             continue
-        for name in ("left_padding", "lengths"):
+        for name in ("left_padding", "lengths", "offset"):
             value = cast(object, getattr(entry, name, None))
             if isinstance(value, mx.array):
                 arrays.append(value)
@@ -91,7 +94,7 @@ def _patched_step(self: GenerationBatch) -> tuple[list[int], list[mx.array]]:
     logits = self.model(inputs[:, None], cache=self.prompt_cache)
     logits = logits[:, -1, :]
 
-    if self.logits_processors is not None and any(self.logits_processors):
+    if any(self.logits_processors):
         processed_logits: list[mx.array] = []
         for e in range(len(self.uids)):
             sample_logits = logits[e : e + 1]
@@ -100,13 +103,16 @@ def _patched_step(self: GenerationBatch) -> tuple[list[int], list[mx.array]]:
             processed_logits.append(sample_logits)
         logits = mx.concatenate(processed_logits, axis=0)
 
+    # Normalise in float32. In bfloat16 the log-probs of the likeliest tokens are
+    # rounded to steps of up to 0.125 and close candidates tie, which changes what
+    # greedy and top-k sampling pick and what the API reports as log-probs.
+    logits = logits.astype(mx.float32)
     logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
-    if self.samplers is not None and any(self.samplers):
+    if any(self.samplers):
         all_samples: list[mx.array] = []
         for e in range(len(self.uids)):
-            sample_sampler = self.samplers[e] or self.fallback_sampler
-            all_samples.append(sample_sampler(logprobs[e : e + 1]))
+            all_samples.append(self.samplers[e](logprobs[e : e + 1]))
         sampled = mx.concatenate(all_samples, axis=0)
     else:
         sampled = self.fallback_sampler(logprobs)
@@ -161,6 +167,28 @@ def _patched_step(self: GenerationBatch) -> tuple[list[int], list[mx.array]]:
     return token_list, current_lp
 
 
+_original_extend = cast(
+    Callable[[GenerationBatch, GenerationBatch], None],
+    GenerationBatch.extend,
+)
+
+
+def _logprob_rows(logprobs: mx.array | list[mx.array]) -> list[mx.array]:
+    return list(logprobs) if isinstance(logprobs, mx.array) else logprobs
+
+
+def _extend_with_array_logprobs(self: GenerationBatch, batch: GenerationBatch) -> None:
+    """The patched step keeps a step's log-probs as one [batch, vocab] array, where
+    mlx-lm keeps a list of rows, so that it can take the top-k of every row at once.
+    mlx-lm's extend appends to those lists: give it lists."""
+    for generation_batch in (self, batch):
+        generation_batch._current_logprobs = _logprob_rows(
+            generation_batch._current_logprobs
+        )
+        generation_batch._next_logprobs = _logprob_rows(generation_batch._next_logprobs)
+    _original_extend(self, batch)
+
+
 _original_prompt = cast(
     Callable[[PromptProcessingBatch, list[list[int]]], None],
     PromptProcessingBatch.prompt,
@@ -181,4 +209,5 @@ def _prompt_after_decode_step(
 
 def apply_batch_gen_patch() -> None:
     GenerationBatch._step = _patched_step
+    GenerationBatch.extend = _extend_with_array_logprobs
     PromptProcessingBatch.prompt = _prompt_after_decode_step

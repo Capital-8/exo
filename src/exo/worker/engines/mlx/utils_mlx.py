@@ -1,12 +1,11 @@
 import json
 import os
 import re
-import sys
 import tempfile
 import time
 from collections.abc import Generator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from exo.worker.engines.mlx.vision import VisionProcessor
@@ -29,6 +28,16 @@ from mlx_lm.tokenizer_utils import TokenizerWrapper
 
 from exo.shared.models.model_cards import ModelId
 from exo.worker.engines.mlx.constants import TRUST_REMOTE_CODE
+from exo.worker.engines.mlx.models.registry import (
+    architecture_for_model,
+    get_model_classes,
+    prompt_encoder_for,
+    reasoning_effort_hook_for,
+    template_kwargs_for,
+    template_messages_hooks_for,
+    tokenizer_loader_for,
+)
+from exo.worker.engines.mlx.models.spec_registry import eos_token_ids_for_model_id
 
 try:
     from mlx_lm.tokenizer_utils import load_tokenizer
@@ -38,6 +47,7 @@ import contextlib
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx.utils import tree_flatten
 from mlx_lm.generate import generation_stream
 from mlx_lm.utils import load_model
 from pydantic import RootModel
@@ -60,11 +70,10 @@ from exo.shared.types.worker.shards import (
     TensorShardMetadata,
 )
 from exo.worker.engines.mlx.auto_parallel import (
-    get_inner_model,
-    get_layers,
     pipeline_auto_parallel,
     tensor_auto_parallel,
 )
+from exo.worker.engines.mlx.sharding.pipeline import get_inner_model, get_layers
 from exo.worker.engines.mlx.types import Model
 from exo.worker.runner.bootstrap import logger
 
@@ -73,7 +82,7 @@ def get_weights_size(model_shard_meta: ShardMetadata) -> Memory:
     return Memory.from_float_kb(
         (model_shard_meta.end_layer - model_shard_meta.start_layer)
         / model_shard_meta.n_layers
-        * model_shard_meta.model_card.storage_size.in_kb
+        * model_shard_meta.model_card.resident_size.in_kb
         / (
             1
             if isinstance(model_shard_meta, PipelineShardMetadata)
@@ -148,6 +157,57 @@ def mlx_distributed_init(
         return group
 
 
+class MissingWeightsError(ValueError):
+    """The checkpoint does not provide every parameter of the model class it loads as."""
+
+
+@contextlib.contextmanager
+def _record_loaded_weight_names(names: set[str]) -> Generator[None]:
+    """Record the parameter names mlx-lm's load_model hands to Module.load_weights."""
+    original = nn.Module.load_weights
+
+    def recording(
+        self: nn.Module,
+        file_or_weights: str | list[tuple[str, mx.array]],
+        strict: bool = True,
+    ) -> nn.Module:
+        if isinstance(file_or_weights, list):
+            names.update(name for name, _ in file_or_weights)
+        return original(self, file_or_weights, strict=strict)
+
+    nn.Module.load_weights = recording
+    try:
+        yield
+    finally:
+        nn.Module.load_weights = original
+
+
+def load_model_checked(model_path: Path) -> nn.Module:
+    """mlx-lm's load_model(lazy=True, strict=False), refusing checkpoints that leave
+    model parameters unset.
+
+    strict=False tolerates checkpoint tensors the model doesn't use (MTP layers, vision
+    towers), but it also silently keeps any parameter the checkpoint lacks at its random
+    initialisation. That is how GLM-5.2/5.3 ran with 57 randomly initialised DSA indexers
+    on an mlx-lm without cross-layer indexer sharing.
+    """
+    loaded_names: set[str] = set()
+    with _record_loaded_weight_names(loaded_names):
+        model, _ = load_model(
+            model_path, lazy=True, strict=False, get_model_classes=get_model_classes
+        )
+    parameter_names = {name for name, _ in tree_flatten(model.parameters())}
+    missing = sorted(parameter_names - loaded_names)
+    if missing:
+        preview = ", ".join(missing[:8])
+        raise MissingWeightsError(
+            f"The checkpoint at {model_path} does not provide {len(missing)} of the "
+            f"model's parameters (e.g. {preview}); they would run randomly initialised. "
+            "The model's architecture is probably not supported."
+        )
+    return model
+
+
 def initialize_mlx(
     bound_instance: BoundInstance,
 ) -> mx.distributed.Group:
@@ -173,7 +233,7 @@ def load_mlx_items(
         logger.info(f"Single device used for {bound_instance.instance}")
         model_path = build_model_path(bound_instance.bound_shard.model_card.model_id)
         start_time = time.perf_counter()
-        model, _ = load_model(model_path, lazy=True, strict=False)
+        model = load_model_checked(model_path)
         # Eval layers one by one for progress reporting
         try:
             inner = get_inner_model(model)
@@ -187,6 +247,7 @@ def load_mlx_items(
                 "Model architecture doesn't support layer-by-layer progress tracking",
             )
         mx.eval(model)
+        run_post_load(model, model_path)
         end_time = time.perf_counter()
         logger.info(f"Time taken to load model: {(end_time - start_time):.2f}s")
         tokenizer = get_tokenizer(model_path, bound_instance.bound_shard)
@@ -230,13 +291,20 @@ def load_mlx_items(
     return cast(Model, model), tokenizer, vision_processor
 
 
+def run_post_load(model: nn.Module, model_path: Path) -> None:
+    """Run the model family's post-load step, if it has one."""
+    architecture = architecture_for_model(model)
+    if architecture is not None and architecture.post_load is not None:
+        architecture.post_load(model, model_path)
+
+
 def shard_and_load(
     shard_metadata: ShardMetadata,
     group: mx.distributed.Group,
 ) -> Generator[ModelLoadingResponse, None, tuple[nn.Module, TokenizerWrapper]]:
     model_path = build_model_path(shard_metadata.model_card.model_id)
 
-    model, _ = load_model(model_path, lazy=True, strict=False)
+    model = load_model_checked(model_path)
     logger.debug(model)
     if hasattr(model, "model") and isinstance(model.model, DeepseekV3Model):  # type: ignore
         pass
@@ -277,6 +345,7 @@ def shard_and_load(
 
     # TODO: Do we need this?
     mx.eval(model)
+    run_post_load(model, model_path)
 
     logger.debug("SHARDED")
     logger.debug(model)
@@ -309,28 +378,7 @@ def get_eos_token_ids_for_model(model_id: ModelId) -> list[int] | None:
     Returns:
         List of EOS token IDs, or None if the model uses standard tokenizer config
     """
-    model_id_lower = model_id.lower()
-    if "kimi-k2" in model_id_lower:
-        return [163586]
-    elif "glm-5" in model_id_lower:
-        # 154820: <|endoftext|>, 154827: <|user|>, 154829: <|observation|>
-        return [154820, 154827, 154829]
-    elif "glm" in model_id_lower:
-        # For GLM-4.7 and older
-        return [151336, 151329, 151338]
-    elif "gpt-oss" in model_id_lower:
-        return [200002, 200012]
-    elif (
-        "qwen3.5" in model_id_lower
-        or "qwen-3.5" in model_id_lower
-        or "qwen3.6" in model_id_lower
-        or "qwen-3.6" in model_id_lower
-    ):
-        # For Qwen3.5 / Qwen3.6: 248046 (<|im_end|>), 248044 (<|endoftext|>)
-        return [248046, 248044]
-    elif "gemma-4" in model_id_lower or "gemma-3" in model_id_lower:
-        return [1, 106, 50]
-    return None
+    return eos_token_ids_for_model_id(model_id)
 
 
 def load_tokenizer_for_model_id(
@@ -349,57 +397,12 @@ def load_tokenizer_for_model_id(
     Returns:
         TokenizerWrapper instance configured for the model
     """
-    model_id_lower = model_id.lower()
     eos_token_ids = get_eos_token_ids_for_model(model_id)
 
-    # Kimi uses a custom TikTokenTokenizer that transformers 5.x can't load via AutoTokenizer
-    if "kimi-k2" in model_id_lower:
-        import importlib.util
-        import types
-
-        sys.path.insert(0, str(model_path))
-
-        # Load tool_declaration_ts first (tokenization_kimi imports it with relative import)
-        tool_decl_path = model_path / "tool_declaration_ts.py"
-        if tool_decl_path.exists():
-            spec = importlib.util.spec_from_file_location(
-                "tool_declaration_ts", tool_decl_path
-            )
-            if spec and spec.loader:
-                tool_decl_module = importlib.util.module_from_spec(spec)
-                sys.modules["tool_declaration_ts"] = tool_decl_module
-                spec.loader.exec_module(tool_decl_module)
-
-        # Load tokenization_kimi with patched source (convert relative to absolute import)
-        tok_path = model_path / "tokenization_kimi.py"
-        source = tok_path.read_text()
-        source = source.replace("from .tool_declaration_ts", "from tool_declaration_ts")
-        spec = importlib.util.spec_from_file_location("tokenization_kimi", tok_path)
-        if spec:
-            tok_module = types.ModuleType("tokenization_kimi")
-            tok_module.__file__ = str(tok_path)
-            sys.modules["tokenization_kimi"] = tok_module
-            exec(compile(source, tok_path, "exec"), tok_module.__dict__)  # noqa: S102
-            TikTokenTokenizer = tok_module.TikTokenTokenizer  # type: ignore[attr-defined]  # noqa: N806
-        else:
-            from tokenization_kimi import TikTokenTokenizer  # type: ignore[import-not-found]  # noqa: I001
-
-        hf_tokenizer: Any = TikTokenTokenizer.from_pretrained(model_path)  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
-
-        # Patch encode to use internal tiktoken model directly
-        # transformers 5.x has a bug in the encode->pad path for slow tokenizers
-        def _patched_encode(text: str, **_kwargs: object) -> list[int]:
-            # Pass allowed_special="all" to handle special tokens like <|im_user|>
-            return list(hf_tokenizer.model.encode(text, allowed_special="all"))  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-
-        hf_tokenizer.encode = _patched_encode
-        return TokenizerWrapper(
-            hf_tokenizer,
-            eos_token_ids=eos_token_ids,
-            tool_call_start="<|tool_calls_section_begin|>",
-            tool_call_end="<|tool_calls_section_end|>",
-            tool_parser=_parse_kimi_tool_calls,
-        )
+    # e.g. Kimi uses a custom TikTokenTokenizer that transformers 5.x can't load via AutoTokenizer
+    tokenizer_loader = tokenizer_loader_for(model_id)
+    if tokenizer_loader is not None:
+        return tokenizer_loader.load(model_path, eos_token_ids)
 
     # We should really consider going back to mlx lm load to get tokenizer
     tokenizer = load_tokenizer(
@@ -483,36 +486,6 @@ def _patch_lossy_chat_template(template: str) -> str | None:
     return patched if n > 0 else None
 
 
-def _needs_dsml_encoding(task_params: TextGenerationTaskParams) -> bool:
-    return "deepseek-v3.2" in task_params.model.lower()
-
-
-def _needs_v4_encoding(task_params: TextGenerationTaskParams) -> bool:
-    return "deepseek-v4" in task_params.model.lower()
-
-
-def _v4_reasoning_effort(task_params: TextGenerationTaskParams) -> str | None:
-    effort = task_params.reasoning_effort
-    if effort == "xhigh":
-        return "max"
-    if effort == "high":
-        return "high"
-    return None
-
-
-def _strip_v4_thinking_markers(content: str) -> str:
-    """Remove `<think>…</think>` blocks and any stray `<think>`/`</think>` tags
-    from prior-turn assistant content.
-
-    The V4 encoder drops `reasoning_content` for older turns when
-    `drop_thinking=True`"""
-    block = re.compile(r"<think>.*?</think>", re.DOTALL)
-    if not content:
-        return content
-    cleaned = block.sub("", content)
-    return cleaned.replace("<think>", "").replace("</think>", "")
-
-
 def consolidate_system_messages(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -539,10 +512,58 @@ def consolidate_system_messages(
     return formatted_messages
 
 
+class _ChatTemplateRenderer(Protocol):
+    def apply_chat_template(
+        self,
+        conversation: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None,
+        add_generation_prompt: bool,
+        tokenize: bool,
+        return_dict: bool,
+        **kwargs: bool | str,
+    ) -> str: ...
+
+
+def _render_leaving_thinking_unset(
+    tokenizer: TokenizerWrapper,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    template_kwargs: dict[str, bool | str],
+) -> str:
+    """Render a request that does not say whether to think.
+
+    mlx-lm's TokenizerWrapper then sets the template's own thinking switch to whether
+    the tokenizer has thinking tokens. A template whose switch is `thinking` (DeepSeek
+    V3.1) defaults to not thinking, so that turns thinking on. exo only ever defaulted
+    `enable_thinking`, so call the Hugging Face tokenizer as the wrapper would, with
+    that default alone, and let such a template keep its own default.
+    """
+    if cast(object, getattr(tokenizer, "_chat_template", None)) is not None:
+        # The wrapper renders with a template function of its own
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            tools=tools,
+            **template_kwargs,
+        )
+    renderer = cast(_ChatTemplateRenderer, cast(object, tokenizer._tokenizer))
+    return renderer.apply_chat_template(
+        messages,
+        tools=tools,
+        add_generation_prompt=True,
+        tokenize=False,
+        return_dict=False,
+        **{"enable_thinking": tokenizer.has_thinking, **template_kwargs},
+    )
+
+
 def render_chat_template(
     tokenizer: TokenizerWrapper,
     messages: list[dict[str, Any]],
     task_params: TextGenerationTaskParams,
+    model_type: str | None = None,
 ) -> str:
     """
     Convert TextGenerationTaskParams to a chat template prompt.
@@ -561,49 +582,9 @@ def render_chat_template(
         partial_assistant_content = cast(str, formatted_messages[-1].get("content", ""))
         formatted_messages = formatted_messages[:-1]
 
-    if _needs_dsml_encoding(task_params):
-        from exo.worker.engines.mlx.vendor.dsml_encoding import encode_messages
-
-        prompt = encode_messages(
-            messages=formatted_messages,
-            # Only use chat mode if enable thinking is explicitly Fakse.
-            thinking_mode="chat"
-            if task_params.enable_thinking is False
-            else "thinking",
-            tools=task_params.tools,
-        )
-        if partial_assistant_content:
-            prompt += partial_assistant_content
-        return prompt
-
-    if _needs_v4_encoding(task_params):
-        from exo.worker.engines.mlx.vendor.deepseek_v4_encoding import (
-            encode_messages as encode_messages_v4,
-        )
-
-        v4_messages = [dict(m) for m in formatted_messages]
-        for msg in v4_messages:
-            if msg.get("role") == "assistant":
-                content = msg.get("content")
-                if isinstance(content, str):
-                    msg["content"] = _strip_v4_thinking_markers(content)
-        if task_params.tools:
-            for msg in v4_messages:
-                if msg.get("role") in ("system", "developer"):
-                    msg["tools"] = task_params.tools
-                    break
-            else:
-                v4_messages.insert(
-                    0, {"role": "system", "content": "", "tools": task_params.tools}
-                )
-
-        prompt = encode_messages_v4(
-            messages=v4_messages,
-            thinking_mode="chat"
-            if task_params.enable_thinking is False
-            else "thinking",
-            reasoning_effort=_v4_reasoning_effort(task_params),
-        )
+    prompt_encoder = prompt_encoder_for(task_params, model_type)
+    if prompt_encoder is not None:
+        prompt = prompt_encoder.encode(formatted_messages, task_params)
         if partial_assistant_content:
             prompt += partial_assistant_content
         return prompt
@@ -611,13 +592,9 @@ def render_chat_template(
     for msg in formatted_messages:
         _normalize_tool_calls(msg)
 
-    # Put reasoning content in thinking block for GPT OSS
-    if "gpt-oss" in task_params.model.lower():
-        for msg in formatted_messages:
-            if msg.get("role") == "assistant" and "thinking" not in msg:
-                rc = msg.get("reasoning_content")
-                if isinstance(rc, str) and rc:
-                    msg["thinking"] = rc
+    template_hooks = template_messages_hooks_for(task_params)
+    for hook in template_hooks:
+        hook.prepare(formatted_messages)
 
     extra_kwargs: dict[str, Any] = {}
     if task_params.enable_thinking is not None:
@@ -625,8 +602,14 @@ def render_chat_template(
         # Jinja ignores unknown variables, so passing both is safe.
         extra_kwargs["enable_thinking"] = task_params.enable_thinking
         extra_kwargs["thinking"] = task_params.enable_thinking
-    if task_params.reasoning_effort is not None:
+    effort_hook = reasoning_effort_hook_for(task_params)
+    if effort_hook is not None:
+        template_effort = effort_hook.template_effort(task_params)
+        if template_effort is not None:
+            extra_kwargs["reasoning_effort"] = template_effort
+    elif task_params.reasoning_effort is not None:
         extra_kwargs["reasoning_effort"] = task_params.reasoning_effort
+    extra_kwargs.update(template_kwargs_for(task_params))
 
     patched_template: str | None = None
     if task_params.tools:
@@ -638,19 +621,33 @@ def render_chat_template(
                     "Patched lossy chat template (removed inner_type length guard)"
                 )
 
-    prompt: str = tokenizer.apply_chat_template(
-        formatted_messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        tools=task_params.tools,
+    template_kwargs: dict[str, bool | str] = {
         **({"chat_template": patched_template} if patched_template is not None else {}),
         **extra_kwargs,
-    )
+    }
+    if task_params.enable_thinking is None:
+        prompt = _render_leaving_thinking_unset(
+            tokenizer, formatted_messages, task_params.tools, template_kwargs
+        )
+    else:
+        prompt = tokenizer.apply_chat_template(
+            formatted_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            tools=task_params.tools,
+            **template_kwargs,
+        )
 
     if task_params.tools and _schemas_lost_in_prompt(prompt, task_params.tools):
         logger.warning("Chat template lost nested tool schemas even after patching")
 
+    if effort_hook is not None and task_params.enable_thinking is False:
+        suffix = effort_hook.thinking_off_suffix(task_params)
+        if suffix is not None:
+            prompt += suffix
+
     if partial_assistant_content:
+        prompt += "".join(hook.prefill_prefix for hook in template_hooks)
         prompt += partial_assistant_content
 
     return prompt
@@ -659,6 +656,7 @@ def render_chat_template(
 def apply_chat_template(
     tokenizer: TokenizerWrapper,
     task_params: TextGenerationTaskParams,
+    model_type: str | None = None,
 ) -> str:
     messages: list[dict[str, ChatTemplateValue]] = []
     if task_params.chat_template_messages is not None:
@@ -676,7 +674,7 @@ def apply_chat_template(
                 continue
             messages.append({"role": msg.role, "content": msg.content})
 
-    prompt = render_chat_template(tokenizer, messages, task_params)
+    prompt = render_chat_template(tokenizer, messages, task_params, model_type)
     logger.debug(prompt)
 
     return prompt
@@ -863,41 +861,6 @@ def mx_barrier(group: mx.distributed.Group | None):
             mx.array(1.0), group=group, stream=mx.default_stream(mx.Device(mx.cpu))
         )
     )
-
-
-def _parse_kimi_tool_calls(text: str):
-    import regex as re
-
-    # kimi has a fixed function naming scheme, with a json formatted arg
-    #   functions.multiply:0<|tool_call_argument_begin|>{"a": 2, "b": 3}
-    _func_name_regex = re.compile(
-        r"^\s*((?:functions\.)?(.+?):\d+)\s*<\|tool_call_argument_begin\|>", re.DOTALL
-    )
-    _func_arg_regex = re.compile(r"<\|tool_call_argument_begin\|>\s*(.*)\s*", re.DOTALL)
-    _tool_call_split_regex = re.compile(
-        r"<\|tool_call_begin\|>(.*?)<\|tool_call_end\|>", re.DOTALL
-    )
-
-    def _parse_single_tool(text: str) -> dict[str, Any]:
-        func_name_match = _func_name_regex.search(text)
-        if func_name_match is None:
-            raise ValueError("No tool call found.")
-        tool_call_id = func_name_match.group(1)  # e.g. "functions.get_weather:0"
-        func_name = func_name_match.group(2)  # e.g. "get_weather"
-
-        func_args_match = _func_arg_regex.search(text)
-        if func_args_match is None:
-            raise ValueError("No tool call arguments found.")
-        func_args = func_args_match.group(1)
-        arg_dct = json.loads(func_args)  # pyright: ignore[reportAny]
-
-        return dict(id=tool_call_id, name=func_name, arguments=arg_dct)  # pyright: ignore[reportAny]
-
-    tool_matches = _tool_call_split_regex.findall(text)
-    if tool_matches:
-        return [_parse_single_tool(match) for match in tool_matches]  # pyright: ignore[reportAny]
-    else:
-        return [_parse_single_tool(text)]
 
 
 def mx_all_gather_tasks(

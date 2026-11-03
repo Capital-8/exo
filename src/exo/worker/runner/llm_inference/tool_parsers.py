@@ -10,12 +10,15 @@ from exo.api.types import ToolCallItem
 class ToolParser:
     start_parsing: str
     end_parsing: str
-    _inner_parser: Callable[[str], list[ToolCallItem] | None]
+    # Called with the tool-call text and the request's tools.
+    _inner_parser: Callable[
+        [str, list[dict[str, Any]] | None], list[ToolCallItem] | None
+    ]
 
     def parse(
         self, text: str, tools: list[dict[str, Any]] | None
     ) -> list[ToolCallItem] | None:
-        parsed = self._inner_parser(text)
+        parsed = self._inner_parser(text, tools)
         if parsed is None:
             return None
         if tools is not None:
@@ -63,6 +66,9 @@ def _coerce_tool_arg_with_schema(value: Any, schema: dict[str, Any]) -> Any:  # 
 
     if schema_type == "object":
         parsed = value  # pyright: ignore[reportAny]
+        if parsed == "":
+            # Formats that write values as text (XML) write an empty object as nothing.
+            return {}
         if isinstance(parsed, str):
             try:
                 parsed = json.loads(parsed)  # pyright: ignore[reportAny]
@@ -85,6 +91,8 @@ def _coerce_tool_arg_with_schema(value: Any, schema: dict[str, Any]) -> Any:  # 
 
     if schema_type == "array":
         parsed = value  # pyright: ignore[reportAny]
+        if parsed == "":
+            return []
         if isinstance(parsed, str):
             try:
                 parsed = json.loads(parsed)  # pyright: ignore[reportAny]
@@ -183,16 +191,32 @@ def _coerce_tool_calls_to_schema(
     return coerced_calls
 
 
+def coerce_tool_calls_to_schemas(
+    tool_calls: list[ToolCallItem], tools: list[dict[str, Any]]
+) -> list[ToolCallItem]:
+    """Each call's arguments coerced to its tool's JSON schema (e.g. "3" to 3 for an
+    integer parameter); calls to unknown tools, or that don't parse, are left as they are."""
+    return _coerce_tool_calls_to_schema(tool_calls, tools)
+
+
 def make_mlx_parser(
     tool_call_start: str,
     tool_call_end: str,
-    tool_parser: Callable[[str], dict[str, Any] | list[dict[str, Any]]],
+    tool_parser: Callable[
+        [str, list[dict[str, Any]] | None], dict[str, Any] | list[dict[str, Any]]
+    ],
 ) -> ToolParser:
-    def parse_tool_calls(text: str) -> list[ToolCallItem] | None:
+    """Wrap one of mlx-lm's tool parsers. They take the request's tools as their second
+    argument, as mlx-lm's server passes them: some (e.g. glm47, qwen3_coder) read the
+    tools' schemas to keep string arguments as written instead of decoding them as JSON."""
+
+    def parse_tool_calls(
+        text: str, tools: list[dict[str, Any]] | None
+    ) -> list[ToolCallItem] | None:
         try:
             text = text.removeprefix(tool_call_start)
             text = text.removesuffix(tool_call_end)
-            parsed = tool_parser(text)
+            parsed = tool_parser(text, tools)
             if isinstance(parsed, list):
                 return [ToolCallItem.model_validate(_flatten(p)) for p in parsed]
             else:
@@ -209,7 +233,9 @@ def make_mlx_parser(
 
 
 # TODO / example code:
-def _parse_json_calls(text: str) -> list[ToolCallItem] | None:
+def _parse_json_calls(
+    text: str, _tools: list[dict[str, Any]] | None
+) -> list[ToolCallItem] | None:
     try:
         text = text.removeprefix("<tool_call>")
         text = text.removesuffix("</tool_call>")

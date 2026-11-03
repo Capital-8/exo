@@ -62,6 +62,14 @@ let
             touch $siteDir/py.typed
           '';
         };
+        # mlx-lm takes its version from git with setuptools-scm, which writes
+        # mlx_lm/_version.py. Without setuptools-scm it installs as 0.0.0 without that
+        # file, and `import mlx_lm` fails. Its source in the nix store has no .git, so
+        # give setuptools-scm the locked version.
+        mlx-lm = prev.mlx-lm.overrideAttrs (old: {
+          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ final.resolveBuildSystem { setuptools-scm = [ ]; };
+          SETUPTOOLS_SCM_PRETEND_VERSION = old.version;
+        });
       };
       buildSystemsOverlay = final: prev:
         lib.optionalAttrs isDarwin
@@ -138,7 +146,16 @@ let
             '';
             autoPatchelfIgnoreMissingDeps = [ "libcuda.so.1" ];
           });
-        } // lib.optionalAttrs cudaSupport {
+        } // lib.optionalAttrs (isLinux && !cudaSupport) (
+          # The lock gives Linux torch's CUDA build, so it and its NVIDIA wheels are in
+          # the closure even without CUDA. Their CUDA and RDMA libraries are only needed
+          # on a GPU: leave them unresolved rather than failing auto-patchelf.
+          lib.mapAttrs
+            (_: pkg: pkg.overrideAttrs (_: { autoPatchelfIgnoreMissingDeps = true; }))
+            (lib.filterAttrs
+              (name: _: lib.hasPrefix "nvidia-" name || builtins.elem name [ "torch" "torchaudio" "torchvision" "triton" ])
+              prev)
+        ) // lib.optionalAttrs cudaSupport {
           "${libmlx_source}" = prev."${libmlx_source}".overrideAttrs (old: {
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.autoAddDriverRunpath ];
             buildInputs = old.buildInputs ++ cudaLibs;

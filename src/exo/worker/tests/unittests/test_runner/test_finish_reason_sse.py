@@ -8,16 +8,16 @@ from exo.shared.types.worker.runner_response import (
     GenerationResponse,
     ToolCallResponse,
 )
-from exo.worker.engines.mlx.vendor.dsml_encoding import (
+from exo.worker.engines.mlx.models.deepseek_v3.dsml_encoding import (
     DSML_TOKEN,
     THINKING_END,
     THINKING_START,
     TOOL_CALLS_END,
     TOOL_CALLS_START,
 )
+from exo.worker.engines.mlx.models.deepseek_v3.parser import parse_deepseek_v32
 from exo.worker.runner.llm_inference.model_output_parsers import (
     count_reasoning_tokens,
-    parse_deepseek_v32,
     parse_thinking_models,
     parse_tool_calls,
 )
@@ -321,7 +321,7 @@ class TestThinkingModelsFinishReason:
 # ── parse_tool_calls (generic) ──────────────────────────────────
 
 
-def _dummy_parser_fn(text: str) -> dict[str, Any]:
+def _dummy_parser_fn(text: str, _tools: object = None) -> dict[str, Any]:
     return {"name": "test_fn", "arguments": {"arg": text}}
 
 
@@ -628,7 +628,7 @@ class TestThinkingModelsPrefixBuffering:
         assert gens[1].is_thinking is False
 
     def test_tool_call_after_prefix_tokens_parses(self):
-        def _capture_parser(text: str) -> dict[str, Any]:
+        def _capture_parser(text: str, _tools: object = None) -> dict[str, Any]:
             return {"name": "captured", "arguments": {"raw": text}}
 
         tool_parser = make_mlx_parser("<tool_call>", "</tool_call>", _capture_parser)

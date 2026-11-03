@@ -1,6 +1,6 @@
 import json
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import aiofiles
 import aiofiles.os as aios
@@ -31,6 +31,7 @@ from exo.shared.types.common import ModelId
 from exo.shared.types.memory import Memory
 from exo.shared.types.text_generation import ReasoningDialect
 from exo.utils.pydantic_ext import FrozenModel
+from exo.worker.engines.mlx.models.spec_registry import tensor_parallel_architectures
 
 # kinda ugly...
 # TODO: load search path from config.toml
@@ -162,6 +163,11 @@ class SamplingDefaults(SamplingValues):
 class ModelCard(FrozenModel):
     model_id: ModelId
     storage_size: Memory
+    # The memory the model takes once loaded, when it differs from storage_size (the
+    # download): for a model that never loads parts of its checkpoint, or leaves some
+    # weights on disk and reads them while running. Placement and the runner's memory
+    # sizing use it (see resident_size); downloads use storage_size.
+    memory_size: Memory | None = None
     n_layers: PositiveInt
     hidden_size: PositiveInt
     supports_tensor: bool
@@ -169,6 +175,9 @@ class ModelCard(FrozenModel):
     tasks: list[ModelTask]
     components: list[ComponentInfo] | None = None
     family: str = ""
+    # config.json `model_type` of the checkpoint. The master looks up the model's family
+    # (placement rules) by it; see exo.worker.engines.mlx.models.
+    model_type: str | None = None
     quantization: str = ""
     base_model: str = ""
     capabilities: list[str] = []
@@ -180,6 +189,11 @@ class ModelCard(FrozenModel):
     is_custom: bool = False
     vision: VisionCardConfig | None = None
     sampling_defaults: SamplingDefaults = Field(default_factory=SamplingDefaults)
+
+    @property
+    def resident_size(self) -> Memory:
+        """The memory the model needs once loaded."""
+        return self.memory_size if self.memory_size is not None else self.storage_size
 
     @model_validator(mode="after")
     def _autodetect_vision(self) -> "ModelCard":
@@ -267,65 +281,58 @@ class ModelCard(FrozenModel):
         )
 
 
+_LAYER_COUNT_KEYS = (
+    "num_hidden_layers",
+    "num_layers",
+    "n_layer",
+    "n_layers",
+    "num_decoder_layers",
+    "decoder_layers",
+)
+
+
 class ConfigData(BaseModel):
     model_config = {"extra": "ignore"}  # Allow unknown fields
 
     architectures: list[str] | None = None
     hidden_size: Annotated[int, Field(ge=0)] | None = None
     num_key_value_heads: PositiveInt | None = None
-    layer_count: int = Field(
-        validation_alias=AliasChoices(
-            "num_hidden_layers",
-            "num_layers",
-            "n_layer",
-            "n_layers",
-            "num_decoder_layers",
-            "decoder_layers",
-        )
-    )
+    layer_count: int = Field(validation_alias=AliasChoices(*_LAYER_COUNT_KEYS))
     max_position_embeddings: int = 0
     vision: VisionCardConfig | None = None
 
     @property
     def supports_tensor(self) -> bool:
-        return self.architectures in [
-            ["Glm4MoeLiteForCausalLM"],
-            ["GlmMoeDsaForCausalLM"],
-            ["DeepseekV4ForCausalLM"],
-            ["DeepseekV32ForCausalLM"],
-            ["DeepseekV3ForCausalLM"],
-            ["Qwen3NextForCausalLM"],
-            ["Qwen3MoeForCausalLM"],
-            ["Qwen3_5MoeForConditionalGeneration"],
-            ["Qwen3_5ForConditionalGeneration"],
-            ["Qwen3VLForConditionalGeneration"],
-            ["MiniMaxM2ForCausalLM"],
-            ["LlamaForCausalLM"],
-            ["GptOssForCausalLM"],
-            ["Step3p5ForCausalLM"],
-            ["NemotronHForCausalLM"],
-            ["Gemma4ForConditionalGeneration"],
-        ]
+        return (
+            self.architectures is not None
+            and len(self.architectures) == 1
+            and self.architectures[0] in tensor_parallel_architectures()
+        )
 
     @model_validator(mode="before")
     @classmethod
     def defer_to_text_config(cls, data: dict[str, Any], info: ValidationInfo):
-        text_config = data.get("text_config")
+        # The language model's config: `text_config` in most multimodal checkpoints,
+        # `llm_config` in NVIDIA's Nemotron-H Omni ones.
+        text_config = data.get("text_config") or data.get("llm_config")
         if text_config is not None:
             for field in [
                 "architectures",
                 "hidden_size",
                 "num_key_value_heads",
                 "max_position_embeddings",
-                "num_hidden_layers",
-                "num_layers",
-                "n_layer",
-                "n_layers",
-                "num_decoder_layers",
-                "decoder_layers",
+                *_LAYER_COUNT_KEYS,
+                "layers_block_type",
             ]:
                 if (val := text_config.get(field)) is not None:  # pyright: ignore[reportAny]
                     data[field] = val
+
+        # Nemotron-H configs saved by transformers list their blocks instead of counting them.
+        block_types = data.get("layers_block_type")
+        if isinstance(block_types, list) and not any(
+            key in data for key in _LAYER_COUNT_KEYS
+        ):
+            data["num_hidden_layers"] = len(cast(list[object], block_types))
 
         vision_config = data.get("vision_config")
         image_token_id = data.get("image_token_id")
