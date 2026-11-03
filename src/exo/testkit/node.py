@@ -8,11 +8,16 @@ This is exo's own `exo.main.main()`, with three changes made in this process bef
 3. The worker's reachability probe asks each node at that node's own API port (every node of
    a real cluster listens on the same port, here each has its own), only on 127.0.0.1, and not
    across a pair the harness has cut.
+4. Where exo has a data plane (exo.shared.serving, not on main), a node reaches a peer's API
+   through the simulated network's proxy for the pair, at the peer's own port, so a cut
+   applies to it too. Without that module this does nothing.
 
 Everything else - discovery, zenoh, election, master, worker, API, downloads, runners - is the
 production code, unchanged.
 """
 
+import importlib
+import importlib.util
 import os
 import sys
 
@@ -66,10 +71,35 @@ def _probe_for(self_id: NodeId):
     return check_reachability
 
 
+# The data plane's module and the function that gives the URLs one node uses to reach
+# another's API: exo's assumes every node serves its API on the same port
+SERVING_MODULE = "exo.shared.serving"
+
+
+def node_urls(
+    _state: object, source: NodeId, sink: NodeId, _api_port: int
+) -> list[str]:
+    """Where `source` reaches `sink`'s API: the pair's proxy in the simulated network."""
+    port = read_table().api_routes.get(source, {}).get(sink)
+    return [] if port is None else [f"http://[::1]:{port}"]
+
+
+def route_node_urls() -> bool:
+    """Point the data plane's node_urls at the simulated network; False where there is none."""
+    if importlib.util.find_spec(SERVING_MODULE) is None:
+        return False
+    serving = importlib.import_module(SERVING_MODULE)
+    if "node_urls" not in serving.__dict__:
+        return False
+    serving.__dict__["node_urls"] = node_urls
+    return True
+
+
 def install(node_id: NodeId) -> None:
     exo.main.get_node_zid = lambda: node_id
     supervisor.entrypoint = stub_entrypoint
     net_profile.check_reachability = _probe_for(node_id)
+    route_node_urls()
 
 
 def main() -> None:

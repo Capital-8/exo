@@ -139,10 +139,13 @@ Replaced or simulated:
   and rewrites each reply's zenoh port to a per-pair proxy.
 - **The network.** Every zenoh link and every stub ring link passes through a proxy in the
   harness (netsim.py), which is what lets a test cut a pair without root.
-- **Three things in each node process** (node.py): its node id is chosen by the harness;
-  runners use the stub; and the worker's reachability probe asks each peer at that peer's
-  own API port, only on 127.0.0.1, and respects cuts. exo itself probes every peer at its
-  own API port (see `test_nodes_with_different_api_ports_can_run_a_model_together`).
+- **Four things in each node process** (node.py): its node id is chosen by the harness;
+  runners use the stub; the worker's reachability probe asks each peer at that peer's own
+  API port, only on 127.0.0.1, and respects cuts (exo itself probes every peer at its own
+  API port, see `test_nodes_with_different_api_ports_can_run_a_model_together`); and where
+  exo has a data plane (`exo.shared.serving`, not on main), `serving.node_urls` gives the
+  pair's proxy in the simulated network, so one node's HTTP to another's API reaches it at
+  its own port and is cut with the pair. Without that module the last does nothing.
 
 What this can't show: anything MLX or Metal does (GPU timeouts, real load and warm-up times,
 memory), Thunderbolt and RDMA, real sleep (a SIGSTOP keeps sockets open and the clock

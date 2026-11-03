@@ -1,10 +1,14 @@
 """The harness's own helpers, without starting nodes."""
 
+import importlib.util
 from pathlib import Path
 
 import pytest
 
+from exo.shared.types.common import NodeId
 from exo.testkit.cluster import ChatResult, Cluster, HarnessTimeoutError
+from exo.testkit.network_table import NETWORK_TABLE_ENV, NetworkTable, write_table
+from exo.testkit.node import SERVING_MODULE, node_urls, route_node_urls
 from exo.testkit.stub.directives import expected_reply
 
 
@@ -37,6 +41,25 @@ def test_wait_for_value_returns_any_value_but_none(
     assert cluster.wait_for_value(lambda: answers.pop(0), timeout=5, what="it") == value
     with pytest.raises(HarnessTimeoutError):
         cluster.wait_for_value(lambda: None, timeout=0.3, what="nothing")
+
+
+def test_a_node_reaches_a_peer_s_api_through_the_pair_s_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = tmp_path / "network.json"
+    a, b = NodeId("a"), NodeId("b")
+    write_table(table, NetworkTable(api_routes={a: {b: 4321}}))
+    monkeypatch.setenv(NETWORK_TABLE_ENV, str(table))
+    assert node_urls(None, a, b, 52415) == ["http://[::1]:4321"]
+    assert node_urls(None, b, a, 52415) == []
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec(SERVING_MODULE) is not None,
+    reason="this exo has a data plane: the route is installed",
+)
+def test_the_api_route_is_a_no_op_without_a_data_plane() -> None:
+    assert route_node_urls() is False
 
 
 def _result(content: str, finish: str | None, error: str | None = None) -> ChatResult:

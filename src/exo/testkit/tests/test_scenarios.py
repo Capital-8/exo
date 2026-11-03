@@ -17,6 +17,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+import httpx
 import pytest
 
 from exo.shared.types.worker.instances import InstanceId
@@ -28,6 +29,7 @@ from exo.testkit.cluster import (
     HarnessError,
     HarnessTimeoutError,
 )
+from exo.testkit.network_table import read_table
 from exo.testkit.stub.config import StubConfig
 from exo.testkit.tests.conftest import MakeCluster
 
@@ -150,6 +152,25 @@ def test_killing_a_node_leaves_its_semaphores_to_the_resource_tracker(
         timeout=15,
         what="the node's resource tracker to unlink its semaphores",
     )
+
+
+def test_node_to_node_api_traffic_goes_through_the_simulated_network(
+    make_cluster: MakeCluster,
+) -> None:
+    """A node's route to a peer's API (what exo.testkit.node gives a data plane) reaches that
+    peer, and a cut between them applies to it."""
+    cluster = make_cluster(2)
+    source, sink = cluster.nodes
+    route = read_table(cluster.network_table_path).api_routes[source.node_id][
+        sink.node_id
+    ]
+    url = f"http://[::1]:{route}/node_id"
+    assert httpx.get(url, timeout=10).json() == sink.node_id
+    cluster.cut(0, 1, "reset")
+    with pytest.raises(httpx.HTTPError):
+        httpx.get(url, timeout=10)
+    cluster.heal()
+    assert httpx.get(url, timeout=10).json() == sink.node_id
 
 
 # --- a follower dies -------------------------------------------------------------------

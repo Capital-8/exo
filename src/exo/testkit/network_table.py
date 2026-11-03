@@ -32,6 +32,9 @@ class NetworkTable(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     api_ports: dict[NodeId, int] = {}
+    # source -> sink -> the port where source reaches sink's API through the simulated
+    # network (so a cut applies to it)
+    api_routes: dict[NodeId, dict[NodeId, int]] = {}
     cuts: list[Cut] = []
 
     def cut_between(self, a: NodeId, b: NodeId) -> CutMode | None:

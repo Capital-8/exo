@@ -7,7 +7,9 @@ All traffic between nodes passes through here, on the IPv6 loopback:
   to every other node, and hands each reply (WhatsUp) back with its zenoh port replaced by
   the port of a proxy for that pair. So when exo's discovery dials a peer, it dials the proxy;
 - zenoh: one TCP proxy per ordered pair of nodes forwards to the peer's zenoh port;
-- stub ring links: the stub runners connect through one more proxy that is told the pair.
+- stub ring links: the stub runners connect through one more proxy that is told the pair;
+- one node's HTTP to another's API (where exo makes any, see exo.testkit.node): one more
+  TCP proxy per ordered pair, forwarding to the peer's API port.
 
 A cut affects one pair, in one of two ways:
 
@@ -97,6 +99,7 @@ class _Node:
     name: str
     discovery_port: int
     zenoh_port: int
+    api_port: int | None = None
     node_id: str | None = None
 
 
@@ -132,6 +135,8 @@ class NetSim:
         self._nodes: dict[str, _Node] = {}
         self._pairs: dict[frozenset[str], _Pair] = {}
         self._proxy_ports: dict[tuple[str, str], int] = {}
+        # (dialler, target) -> the port where dialler reaches target's API through the pair
+        self.api_proxy_ports: dict[tuple[str, str], int] = {}
         self._servers: list[asyncio.Server] = []
         self._pair_sockets: dict[tuple[str, str], asyncio.DatagramTransport] = {}
         self._relay: asyncio.DatagramTransport | None = None
@@ -154,8 +159,14 @@ class NetSim:
         if not self._thread.is_alive():
             self._loop.close()
 
-    def add_node(self, name: str, discovery_port: int, zenoh_port: int) -> None:
-        self._call(self._add_node(name, discovery_port, zenoh_port))
+    def add_node(
+        self,
+        name: str,
+        discovery_port: int,
+        zenoh_port: int,
+        api_port: int | None = None,
+    ) -> None:
+        self._call(self._add_node(name, discovery_port, zenoh_port, api_port))
 
     def set_node_id(self, name: str, node_id: str) -> None:
         def update() -> None:
@@ -206,10 +217,12 @@ class NetSim:
             task.cancel()
         await asyncio.gather(*others, return_exceptions=True)
 
-    async def _add_node(self, name: str, discovery_port: int, zenoh_port: int) -> None:
+    async def _add_node(
+        self, name: str, discovery_port: int, zenoh_port: int, api_port: int | None
+    ) -> None:
         if name in self._nodes:
             raise ValueError(f"node {name} is already on the network")
-        node = _Node(name, discovery_port, zenoh_port)
+        node = _Node(name, discovery_port, zenoh_port, api_port)
         for other in self._nodes.values():
             self._pairs[frozenset((name, other.name))] = _Pair()
             for dialler, target in ((node, other), (other, node)):
@@ -220,6 +233,16 @@ class NetSim:
                 )
                 self._servers.append(server)
                 self._proxy_ports[(dialler.name, target.name)] = _server_port(server)
+                if target.api_port is not None:
+                    api_server = await asyncio.start_server(
+                        self._api_connection_handler(dialler.name, target.name),
+                        host="::1",
+                        port=0,
+                    )
+                    self._servers.append(api_server)
+                    self.api_proxy_ports[(dialler.name, target.name)] = _server_port(
+                        api_server
+                    )
                 transport, _ = await self._loop.create_datagram_endpoint(
                     partial(_RelayProtocol, self, dialler.name, target.name),
                     local_addr=("::1", 0),
@@ -278,6 +301,17 @@ class NetSim:
         self._pair_sockets[(origin_name, peer_name)].sendto(
             bytes(reply), ("::1", origin.discovery_port)
         )
+
+    def _api_connection_handler(self, dialler: str, target: str):
+        async def handle(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            pair = self._pairs[frozenset((dialler, target))]
+            api_port = self._nodes[target].api_port
+            assert api_port is not None
+            await self._proxy(pair, reader, writer, "127.0.0.1", api_port)
+
+        return handle
 
     def _zenoh_connection_handler(self, dialler: str, target: str):
         async def handle(
