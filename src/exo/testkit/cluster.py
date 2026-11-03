@@ -208,6 +208,12 @@ class Node:
         return NodeId(f"{0xF - self.index:x}{self.generation:02x}{self.run_token}")
 
     @property
+    def address(self) -> str:
+        """Where its peers reach it: its own loopback address, as each node of a real cluster
+        has its own address (exo.testkit.node)"""
+        return f"127.0.0.{self.index + 2}"
+
+    @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.api_port}"
 
@@ -574,6 +580,7 @@ class Cluster:
             self.network_table_path,
             NetworkTable(
                 api_ports={node.node_id: node.api_port for node in self.nodes},
+                addresses={node.node_id: node.address for node in self.nodes},
                 api_routes={
                     source.node_id: {
                         sink.node_id: self.network.api_proxy_ports[

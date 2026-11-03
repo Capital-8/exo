@@ -32,6 +32,10 @@ class NetworkTable(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     api_ports: dict[NodeId, int] = {}
+    # The address each node's peers know it by: on a real network every node has its own,
+    # and exo's worker tells topology edges apart only by address (all of these are this
+    # machine's loopback)
+    addresses: dict[NodeId, str] = {}
     # source -> sink -> the port where source reaches sink's API through the simulated
     # network (so a cut applies to it)
     api_routes: dict[NodeId, dict[NodeId, int]] = {}

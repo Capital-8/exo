@@ -7,7 +7,9 @@ This is exo's own `exo.main.main()`, with three changes made in this process bef
 2. Runners use the stub engine (exo.testkit.stub) instead of MLX.
 3. The worker's reachability probe asks each node at that node's own API port (every node of
    a real cluster listens on the same port, here each has its own), only on 127.0.0.1, and not
-   across a pair the harness has cut.
+   across a pair the harness has cut. It reports each peer at that peer's own address
+   (127.0.0.k): exo's worker tells topology edges apart only by address, so with every peer
+   at 127.0.0.1 an edge to one peer would hide the edge to another.
 4. Where exo has a data plane (exo.shared.serving, not on main), a node reaches a peer's API
    through the simulated network's proxy for the pair, at the peer's own port, so a cut
    applies to it too. Without that module this does nothing.
@@ -20,14 +22,18 @@ import importlib
 import importlib.util
 import os
 import sys
+from collections.abc import AsyncGenerator, Mapping
 
 import anyio
 import httpx
 
 import exo.main
 import exo.utils.info_gatherer.net_profile as net_profile
+import exo.worker.main as worker_main
 import exo.worker.runner.supervisor as supervisor
+from exo.shared.topology import Topology
 from exo.shared.types.common import NodeId
+from exo.shared.types.profiling import NodeNetworkInfo
 from exo.testkit.network_table import PROBE_OWN_PORT_ENV, read_table
 from exo.testkit.stub.entrypoint import entrypoint as stub_entrypoint
 
@@ -36,6 +42,7 @@ from exo.testkit.stub.entrypoint import entrypoint as stub_entrypoint
 BLACKHOLED_PROBE_SECONDS = net_profile.REACHABILITY_ATTEMPTS * (5.0 + 1.0)
 
 _real_check_reachability = net_profile.check_reachability
+_real_check_reachable = net_profile.check_reachable
 
 
 def _probe_for(self_id: NodeId):
@@ -95,10 +102,25 @@ def route_node_urls() -> bool:
     return True
 
 
+async def check_reachable(
+    topology: Topology,
+    self_node_id: NodeId,
+    node_network: Mapping[NodeId, NodeNetworkInfo],
+    api_port: int,
+) -> AsyncGenerator[tuple[str, NodeId], None]:
+    """exo's sweep, with each reachable peer reported at its own address."""
+    addresses = read_table().addresses
+    async for ip, node_id in _real_check_reachable(
+        topology, self_node_id, node_network, api_port
+    ):
+        yield addresses.get(node_id, ip), node_id
+
+
 def install(node_id: NodeId) -> None:
     exo.main.get_node_zid = lambda: node_id
     supervisor.entrypoint = stub_entrypoint
     net_profile.check_reachability = _probe_for(node_id)
+    worker_main.check_reachable = check_reachable
     route_node_urls()
 
 

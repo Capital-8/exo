@@ -340,6 +340,10 @@ class NetSim:
             pair = _Pair()
         else:
             pair = self._pairs[frozenset((source, destination))]
+        # Every node is this machine: a peer's own loopback address (127.0.0.k, see
+        # exo.testkit.node) is reached at 127.0.0.1, which every system has
+        if host.startswith("127."):
+            host = "127.0.0.1"
         await self._proxy(pair, reader, writer, host, int(port), greet=b"OK\n")
 
     async def _proxy(

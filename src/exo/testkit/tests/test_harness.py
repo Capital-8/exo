@@ -1,11 +1,15 @@
 """The harness's own helpers, without starting nodes."""
 
 import importlib.util
+from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
 
 import pytest
 
+from exo.shared.topology import Topology
 from exo.shared.types.common import NodeId
+from exo.shared.types.profiling import NodeNetworkInfo
+from exo.testkit import node as testkit_node
 from exo.testkit.cluster import ChatResult, Cluster, HarnessTimeoutError
 from exo.testkit.network_table import NETWORK_TABLE_ENV, NetworkTable, write_table
 from exo.testkit.node import SERVING_MODULE, node_urls, route_node_urls
@@ -52,6 +56,32 @@ def test_a_node_reaches_a_peer_s_api_through_the_pair_s_route(
     monkeypatch.setenv(NETWORK_TABLE_ENV, str(table))
     assert node_urls(None, a, b, 52415) == ["http://[::1]:4321"]
     assert node_urls(None, b, a, 52415) == []
+
+
+async def test_the_sweep_reports_each_peer_at_its_own_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """exo's worker tells edges apart only by address: two peers both at 127.0.0.1 would
+    share one edge value, and the edge to the second would never be made."""
+    a, b = NodeId("a"), NodeId("b")
+    table = tmp_path / "network.json"
+    write_table(table, NetworkTable(addresses={a: "127.0.0.2", b: "127.0.0.3"}))
+    monkeypatch.setenv(NETWORK_TABLE_ENV, str(table))
+
+    async def every_peer_on_loopback(
+        topology: Topology,
+        self_node_id: NodeId,
+        node_network: Mapping[NodeId, NodeNetworkInfo],
+        api_port: int,
+    ) -> AsyncGenerator[tuple[str, NodeId], None]:
+        for peer in (a, b):
+            yield "127.0.0.1", peer
+
+    monkeypatch.setattr(testkit_node, "_real_check_reachable", every_peer_on_loopback)
+    found = [
+        pair async for pair in testkit_node.check_reachable(Topology(), a, {}, 52415)
+    ]
+    assert found == [("127.0.0.2", a), ("127.0.0.3", b)]
 
 
 @pytest.mark.skipif(
