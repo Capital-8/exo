@@ -1,6 +1,12 @@
 <script lang="ts">
   import { exoYellow } from "$lib/utils/brand_colors";
   import {
+    describeDevice,
+    fetchDevicesOnOtherVersions,
+    OTHER_VERSIONS_POLL_MS,
+    type DeviceOnOtherVersion,
+  } from "$lib/utils/other_versions";
+  import {
     TopologyGraph,
     ChatForm,
     ChatMessages,
@@ -189,6 +195,18 @@
       version: id.osVersion!,
       buildVersion: id.osBuildVersion ?? "Unknown",
     }));
+  });
+
+  // Devices under this cluster's name that can't join it: they run another
+  // version of exo
+  let devicesOnOtherVersions = $state<DeviceOnOtherVersion[]>([]);
+  $effect(() => {
+    const poll = async () => {
+      devicesOnOtherVersions = await fetchDevicesOnOtherVersions();
+    };
+    void poll();
+    const timer = setInterval(poll, OTHER_VERSIONS_POLL_MS);
+    return () => clearInterval(timer);
   });
 
   // Dismissed RDMA warnings stay dismissed across reloads (in this browser).
@@ -4894,7 +4912,7 @@
 </script>
 
 {#snippet clusterWarnings()}
-  {#if tbBridgeCycles.length > 0 || macosVersionMismatch || (tb5WithoutRdma && !tb5InfoDismissed) || (macStudioEn2RdmaWarning && !macStudioEn2Dismissed)}
+  {#if tbBridgeCycles.length > 0 || macosVersionMismatch || devicesOnOtherVersions.length > 0 || (tb5WithoutRdma && !tb5InfoDismissed) || (macStudioEn2RdmaWarning && !macStudioEn2Dismissed)}
     <div class="absolute top-4 left-4 flex flex-col gap-2 z-40">
       {#if tbBridgeCycles.length > 0}
         {@const cycle = tbBridgeCycles[0]}
@@ -5013,6 +5031,56 @@
             <p class="text-xs text-white/60">
               <span class="text-yellow-300">Suggested action:</span> Update all devices
               to the same macOS version for best compatibility.
+            </p>
+          </div>
+        </div>
+      {/if}
+
+      {#if devicesOnOtherVersions.length > 0}
+        <div class="group relative" role="alert">
+          <div
+            class="flex items-center gap-2 px-3 py-2 rounded border border-yellow-500/50 bg-yellow-500/10 backdrop-blur-sm cursor-help"
+          >
+            <svg
+              class="w-5 h-5 text-yellow-400 flex-shrink-0"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d={warningIconPath}
+              />
+            </svg>
+            <span class="text-sm font-mono text-yellow-200">
+              DEVICE ON ANOTHER EXO VERSION
+            </span>
+          </div>
+
+          <!-- Tooltip on hover -->
+          <div
+            class="absolute top-full left-0 mt-2 w-80 p-3 rounded border border-yellow-500/30 bg-exo-dark-gray/95 backdrop-blur-sm opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 shadow-lg"
+          >
+            <p class="text-xs text-white/80 mb-2">
+              A device on your network uses this cluster's name but runs another
+              version of exo, so it can't join this cluster.
+            </p>
+            <div class="text-xs text-white/60 mb-2">
+              <!-- One device can be heard on several of its addresses -->
+              {#each devicesOnOtherVersions.slice(0, 4) as device}
+                <div class="ml-2 break-words">{describeDevice(device)}</div>
+              {/each}
+              {#if devicesOnOtherVersions.length > 4}
+                <div class="ml-2">
+                  and {devicesOnOtherVersions.length - 4} more addresses
+                </div>
+              {/if}
+            </div>
+            <p class="text-xs text-white/60">
+              <span class="text-yellow-300">Suggested action:</span> Update every
+              device to the same version of exo.
             </p>
           </div>
         </div>
@@ -5345,7 +5413,7 @@
 {/snippet}
 
 {#snippet clusterWarningsCompact()}
-  {#if tbBridgeCycles.length > 0 || macosVersionMismatch || (tb5WithoutRdma && !tb5InfoDismissed) || (macStudioEn2RdmaWarning && !macStudioEn2Dismissed)}
+  {#if tbBridgeCycles.length > 0 || macosVersionMismatch || devicesOnOtherVersions.length > 0 || (tb5WithoutRdma && !tb5InfoDismissed) || (macStudioEn2RdmaWarning && !macStudioEn2Dismissed)}
     <div class="absolute top-2 left-2 flex flex-col gap-1">
       {#if tbBridgeCycles.length > 0}
         <div
@@ -5388,6 +5456,29 @@
           </svg>
           <span class="text-[10px] font-mono text-yellow-200"
             >macOS MISMATCH</span
+          >
+        </div>
+      {/if}
+      {#if devicesOnOtherVersions.length > 0}
+        <div
+          class="flex items-center gap-1.5 px-2 py-1 rounded border border-yellow-500/50 bg-yellow-500/10 backdrop-blur-sm"
+          title="A device on your network runs another version of exo and can't join this cluster"
+        >
+          <svg
+            class="w-3.5 h-3.5 text-yellow-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d={warningIconPath}
+            />
+          </svg>
+          <span class="text-[10px] font-mono text-yellow-200"
+            >OTHER EXO VERSION</span
           >
         </div>
       {/if}
