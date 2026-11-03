@@ -407,6 +407,37 @@ def test_a_runner_that_crashes_mid_reply_ends_it_and_its_instance_recovers(
 
 
 @pytest.mark.slow
+@pytest.mark.xfail(
+    strict=True,
+    raises=EXPECTED_FAILURES,
+    reason="Found by this harness: after one rank crashes, each node stops its fresh "
+    "replacement runner while the other node's runner still shows RunnerFailed, and "
+    "stopping it marks it Failed in turn: the nodes ping-pong. With runners that take 3 s "
+    "to start (importing MLX and the model code takes seconds) they never both come up, "
+    "and after 6 rounds the worker gives up and deletes the instance. A fast-set run at "
+    "load average ~50 showed the same ping-pong without any start delay",
+)
+def test_a_rank_crash_with_slow_runner_starts_leaves_its_instance_serving(
+    make_cluster: MakeCluster,
+) -> None:
+    cluster = make_cluster(3)
+    instance = cluster.launch(on=(1, 2))
+    cluster.configure_stub(StubConfig(start_seconds=3))
+    result = cluster.chat(
+        "slow starts [stub tokens=200 rate=50 fault=crash at=10 rank=0]",
+        via=0,
+        timeout=60,
+    )
+    _clean_error(result)
+    try:
+        cluster.wait_ready(instance, timeout=60)
+    except HarnessTimeoutError as error:
+        gone = _instance_gone(cluster, instance, via=0)
+        raise AssertionError(f"{error}; instance deleted: {gone}") from error
+    _ok(cluster.chat("after the crash", via=0, timeout=30))
+
+
+@pytest.mark.slow
 def test_a_runner_that_raises_mid_reply_ends_it_and_its_instance_recovers(
     make_cluster: MakeCluster,
 ) -> None:
