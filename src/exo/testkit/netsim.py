@@ -151,6 +151,8 @@ class NetSim:
         self._call(self._stop())
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
+        if not self._thread.is_alive():
+            self._loop.close()
 
     def add_node(self, name: str, discovery_port: int, zenoh_port: int) -> None:
         self._call(self._add_node(name, discovery_port, zenoh_port))
@@ -197,6 +199,12 @@ class NetSim:
             transport.close()
         if self._relay is not None:
             self._relay.close()
+        others = [
+            task for task in asyncio.all_tasks() if task is not asyncio.current_task()
+        ]
+        for task in others:
+            task.cancel()
+        await asyncio.gather(*others, return_exceptions=True)
 
     async def _add_node(self, name: str, discovery_port: int, zenoh_port: int) -> None:
         if name in self._nodes:

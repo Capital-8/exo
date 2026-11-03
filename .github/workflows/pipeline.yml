@@ -115,3 +115,14 @@ jobs:
           export EXO_DASHBOARD_DIR="$PWD/dashboard/" 
           export EXO_RESOURCES_DIR="$PWD/resources" 
           $TEST_ENV/bin/python -m pytest src -m "not slow" --import-mode=importlib
+
+      - name: Run cluster tests (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          # exo.testkit's fast scenarios: real exo nodes on this machine with a stub engine, no
+          # MLX needed. On macOS they run with the rest of pytest above.
+          TEST_ENV=$(nix build '.#exo-test-env' --print-out-paths)
+          export HOME="$RUNNER_TEMP"
+          export EXO_TESTS=1
+          export EXO_RESOURCES_DIR="$PWD/resources"
+          $TEST_ENV/bin/python -m pytest src/exo/testkit -m "not slow" --import-mode=importlib -rxXf
