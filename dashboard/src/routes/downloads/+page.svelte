@@ -6,6 +6,7 @@
     topologyData,
     downloads,
     instances,
+    runners,
     nodeDisk,
     refreshState,
     lastUpdate as lastUpdateStore,
@@ -19,7 +20,7 @@
     extractModelIdFromDownload,
     extractShardMetadata,
     deleteDownloadQuestion,
-    isModelRunningOnNode,
+    modelStateOnNode,
   } from "$lib/utils/downloads";
   import HeaderNav from "$lib/components/HeaderNav.svelte";
 
@@ -392,7 +393,12 @@
           deviceName: col.label,
           size,
           // Deleting doesn't stop it: say so, it would download again
-          running: isModelRunningOnNode(instances(), col.nodeId, row.modelId),
+          state: modelStateOnNode(
+            instances(),
+            runners(),
+            col.nodeId,
+            row.modelId,
+          ),
         }),
       )
     )
