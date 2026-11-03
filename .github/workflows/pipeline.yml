@@ -118,6 +118,8 @@ jobs:
 
       - name: Run cluster tests (Linux only)
         if: runner.os == 'Linux'
+        # About 6 min on a quiet runner; a hang must not hold the job
+        timeout-minutes: 20
         run: |
           # exo.testkit's fast scenarios: real exo nodes on this machine with a stub engine, no
           # MLX needed. On macOS they run with the rest of pytest above.
