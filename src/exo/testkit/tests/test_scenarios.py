@@ -428,6 +428,16 @@ def test_a_node_that_quits_with_an_instance_leaves_no_task_behind(
     cluster.wait_until_consistent(timeout=20)
 
 
+@pytest.mark.slow
+def test_a_node_that_quits_leaves_every_view_at_once(make_cluster: MakeCluster) -> None:
+    """A follower quits (SIGINT). Since #2582 a quitting node says it is leaving, and every
+    other node drops it at once (bound 5 s after it exited). Before, nothing said so: it
+    stayed listed, with its models, for the 15 s silence timeout."""
+    cluster = make_cluster(3)
+    cluster.quit(_roles(cluster).followers[0])
+    cluster.wait_until_consistent(timeout=5)
+
+
 # --- a follower sleeps -----------------------------------------------------------------
 
 
