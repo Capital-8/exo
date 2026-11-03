@@ -13,11 +13,10 @@ Two changes that each take the next version both add a line at the end of the le
 makes whichever merges second take a new one, instead of letting two different schemas share
 a version.
 
-Write the snapshot with ``--keep-version`` only when the generated schema changed but the
-bytes nodes send did not (a pydantic upgrade renders schemas differently, or a model that is
-never sent by name was renamed), and say why in the PR. It rewrites the hash on the ledger's
-last line, so it refuses when that line isn't the one committed at HEAD: never use it to settle
-a conflict in the ledger, where that line may already be on main for another schema.
+A change that leaves the bytes on the wire as they were (a pydantic upgrade that renders
+schemas differently, a model that is never sent by name renamed) takes the next version too: a
+spare version costs nothing, and no line is ever rewritten. Settle a conflict in the ledger the
+same way, by taking the next version.
 
 Besides each message's JSON schema (with ``required`` sorted, since field order isn't on the
 wire), the snapshot records what JSON schema can't show:
@@ -48,7 +47,6 @@ import ast
 import hashlib
 import inspect
 import json
-import subprocess
 import sys
 import textwrap
 from collections.abc import Callable, Mapping
@@ -71,8 +69,8 @@ LEDGER_PATH: Final = Path(__file__).with_name("wire_versions.txt")
 _LEDGER_HEADER: Final = """\
 # exo's wire versions: one line each, the version, then a hash of its wire schema
 # (src/exo/routing/wire_schema.py). Append only: two changes that each take the next version
-# both add a line here, so git makes the second to merge take a new one. Never settle a
-# conflict here with --keep-version: take the next version.
+# both add a line here, so git makes the second to merge take a new one. Never edit a line,
+# to settle a conflict or otherwise: take the next version.
 """
 
 # What a schema says that doesn't change which messages a node accepts. Defaults don't
@@ -285,27 +283,6 @@ def parse_ledger(text: str) -> list[LedgerEntry]:
     return entries
 
 
-def ledger_at_head() -> list[LedgerEntry] | None:
-    """The ledger as committed at HEAD, or None where git can't say (not a checkout)."""
-    try:
-        committed = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(LEDGER_PATH.parent),
-                "show",
-                f"HEAD:./{LEDGER_PATH.name}",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return parse_ledger(committed.stdout)
-
-
 def dump_ledger(entries: list[LedgerEntry]) -> str:
     return _LEDGER_HEADER + "".join(
         f"{entry.wire_version} {entry.schema_hash}\n" for entry in entries
@@ -343,15 +320,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=f"write {SNAPSHOT_PATH.name}, and the new version's line in {LEDGER_PATH.name}",
     )
-    parser.add_argument(
-        "--keep-version",
-        action="store_true",
-        help="write a changed schema without a new WIRE_VERSION (only when the bytes "
-        "nodes send are the same)",
-    )
     args = parser.parse_args(argv)
     write = cast(bool, args.write)
-    keep_version = cast(bool, args.keep_version)
 
     current = wire_schema()
     current_hash = schema_hash(current)
@@ -378,24 +348,11 @@ def main(argv: list[str] | None = None) -> int:
         ledger.append(LedgerEntry(WIRE_VERSION, current_hash))
     elif last.wire_version == WIRE_VERSION and current_hash == last.schema_hash:
         pass  # only the snapshot's layout is out of date
-    elif last.wire_version == WIRE_VERSION and keep_version:
-        committed = ledger_at_head()
-        if not committed or committed[-1] != last:
-            print(
-                f"--keep-version rewrites the schema of wire version {WIRE_VERSION}, but "
-                f"that line of {LEDGER_PATH.name} isn't the one committed at HEAD (a merge "
-                "brought it, or it was edited), so it may already be on main for another "
-                f"schema. Set WIRE_VERSION to {last.wire_version + 1} instead.",
-                file=sys.stderr,
-            )
-            return 1
-        ledger[-1] = LedgerEntry(WIRE_VERSION, current_hash)
     else:
         print(
             f"WIRE_VERSION is {WIRE_VERSION} and the ledger's last version is "
             f"{last.wire_version}. Set WIRE_VERSION to {last.wire_version + 1} in "
-            "src/exo/routing/wire.py, or pass --keep-version if the bytes nodes send "
-            "didn't change (never to settle a conflict in the ledger).",
+            "src/exo/routing/wire.py: a changed schema always takes the next version.",
             file=sys.stderr,
         )
         return 1
