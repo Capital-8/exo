@@ -1,8 +1,20 @@
 """The stub ranks' collective: a TCP ring between an instance's runners, as MLX's ring backend has.
 
 It couples the ranks the way the real model does: each rank waits for the others at every
-step, a stopped rank stops the others, and a lost rank shows up as a failed receive. The
-addresses come from the instance's placement (`hosts_by_node`), the same ones MLX would use.
+step, a stopped rank stops the others, and a lost rank ends the others. The addresses come
+from the instance's placement (`hosts_by_node`), the same ones MLX uses.
+
+It copies what MLX 0.32.4's ring backend was seen to do on real hardware:
+
+- each pair of neighbouring ranks shares one connection, which the higher rank makes. A rank
+  that only accepts (rank 0, and every rank but the last of a larger ring) waits for its
+  connections forever; a rank that connects tries 5 times, waiting 1, 2, 4, 8 and 16 s, then
+  fails with "Couldn't connect";
+- it listens with SO_REUSEADDR and SO_REUSEPORT, so a second process on the same port binds
+  without an error and waits; and it stops listening once the ring is up;
+- whatever process accepts at the address is taken as the neighbour: there is no check that
+  it is this instance's current runner;
+- a rank whose neighbour goes away fails with "[ring] connection to a peer was lost".
 
 One deviation, because every node is on one machine: MLX gives every rank the same port, and
 here each rank listens on that port plus its rank.
@@ -11,7 +23,6 @@ here each rank listens on that port plus its rank.
 import errno
 import socket
 import struct
-import threading
 import time
 from dataclasses import dataclass
 from typing import cast, final
@@ -20,19 +31,17 @@ from exo.shared.types.common import NodeId
 from exo.shared.types.worker.instances import BoundInstance, MlxRingInstance
 
 _FRAME_HEADER = struct.Struct("!IH")
-_CONNECT_RETRY_SECONDS = 0.2
-# A runner answers a hello at once; one that doesn't is stale (stopped, or about to be)
-_HANDSHAKE_TIMEOUT = 2.0
-_READY = b"READY\n"
+# MLX's ring backend: the waits after each failed attempt to connect, before it gives up
+DIAL_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0)
+LOST_PEER_MESSAGE = "[ring] connection to a peer was lost"
 
 
-class RingError(Exception):
-    """A receive or send to a neighbouring rank failed: the peer is gone or the link is cut."""
+class RingError(RuntimeError):
+    """A link to a neighbouring rank failed: the peer is gone or the link is cut."""
 
-    def __init__(self, error_number: int, file_descriptor: int, detail: str) -> None:
-        super().__init__(detail)
+    def __init__(self, error_number: int, detail: str) -> None:
+        super().__init__(f"{LOST_PEER_MESSAGE} ({detail})")
         self.error_number = error_number
-        self.file_descriptor = file_descriptor
 
 
 def rank_to_node(bound_instance: BoundInstance) -> dict[int, NodeId]:
@@ -43,55 +52,63 @@ def rank_to_node(bound_instance: BoundInstance) -> dict[int, NodeId]:
     }
 
 
+def _links(rank: int, size: int) -> tuple[list[int], list[int]]:
+    """The neighbours this rank connects to (lower ranks) and accepts from (higher ones)."""
+    neighbours = sorted({(rank - 1) % size, (rank + 1) % size} - {rank})
+    return (
+        [n for n in neighbours if n < rank],
+        [n for n in neighbours if n > rank],
+    )
+
+
 @final
 @dataclass
 class Ring:
     rank: int
     size: int
-    _send_socket: socket.socket
-    _receive_socket: socket.socket
-    _listener: socket.socket
+    _right: socket.socket
+    _left: socket.socket
 
     @classmethod
     def connect(cls, bound_instance: BoundInstance, proxy_port: int | None) -> "Ring":
-        """Join the instance's ring, waiting as long as it takes for the neighbours (exo's
-        supervisor stops a runner that takes too long to connect)."""
         instance = bound_instance.instance
         if not isinstance(instance, MlxRingInstance):
             raise NotImplementedError("the stub engine only runs ring instances")
         shard = bound_instance.bound_shard
         rank, size = shard.device_rank, shard.world_size
-        right, left = (rank + 1) % size, (rank - 1) % size
         hosts = instance.hosts_by_node[bound_instance.bound_node_id]
         nodes = rank_to_node(bound_instance)
-        instance_id = str(instance.instance_id)
+        dial_to, accept_from = _links(rank, size)
 
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("0.0.0.0", instance.ephemeral_port + rank))
-        listener.listen(4)
-
-        accepted: list[socket.socket] = []
-        acceptor = threading.Thread(
-            target=_accept,
-            args=(listener, f"{instance_id} {left}", accepted),
-            name="stub-ring-accept",
-            daemon=True,
-        )
-        acceptor.start()
-        send_socket = _dial(
-            host=hosts[right].ip,
-            port=instance.ephemeral_port + right,
-            proxy_port=proxy_port,
-            source=bound_instance.bound_node_id,
-            destination=nodes[right],
-            hello=f"{instance_id} {rank}",
-        )
-        acceptor.join()
-        (receive_socket,) = accepted
-        for each in (send_socket, receive_socket):
-            each.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        return cls(rank, size, send_socket, receive_socket, listener)
+        links: dict[int, socket.socket] = {}
+        if accept_from:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            listener.bind(("0.0.0.0", instance.ephemeral_port + rank))
+            listener.listen(4)
+            try:
+                while len(links) < len(accept_from):
+                    connection = listener.accept()[0]
+                    peer = _read_line(connection)
+                    if peer.isdigit() and int(peer) in accept_from:
+                        links[int(peer)] = connection
+                    else:
+                        connection.close()
+            finally:
+                listener.close()
+        for peer in dial_to:
+            links[peer] = _dial(
+                host=hosts[peer].ip,
+                port=instance.ephemeral_port + peer,
+                proxy_port=proxy_port,
+                source=bound_instance.bound_node_id,
+                destination=nodes[peer],
+                rank=rank,
+            )
+        for connection in links.values():
+            connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return cls(rank, size, links[(rank + 1) % size], links[(rank - 1) % size])
 
     def all_gather(self, payload: bytes) -> list[bytes]:
         """Every rank's payload, indexed by rank."""
@@ -108,20 +125,14 @@ class Ring:
         self.all_gather(b"")
 
     def close(self) -> None:
-        for each in (self._send_socket, self._receive_socket, self._listener):
+        for each in {self._right, self._left}:
             each.close()
 
     def _send(self, origin_rank: int, payload: bytes) -> None:
         try:
-            self._send_socket.sendall(
-                _FRAME_HEADER.pack(len(payload), origin_rank) + payload
-            )
+            self._right.sendall(_FRAME_HEADER.pack(len(payload), origin_rank) + payload)
         except OSError as error:
-            raise RingError(
-                error.errno or errno.EPIPE,
-                self._send_socket.fileno(),
-                f"send to rank {(self.rank + 1) % self.size} failed: {error}",
-            ) from error
+            raise RingError(error.errno or errno.EPIPE, f"send: {error}") from error
 
     def _receive(self) -> tuple[int, bytes]:
         header = self._receive_exactly(_FRAME_HEADER.size)
@@ -132,43 +143,15 @@ class Ring:
         received = bytearray()
         while len(received) < length:
             try:
-                chunk = self._receive_socket.recv(length - len(received))
+                chunk = self._left.recv(length - len(received))
             except OSError as error:
                 raise RingError(
-                    error.errno or errno.ECONNRESET,
-                    self._receive_socket.fileno(),
-                    f"receive failed: {error}",
+                    error.errno or errno.ECONNRESET, f"receive: {error}"
                 ) from error
             if not chunk:
-                # MLX reports a peer that went away as a failed receive
-                raise RingError(
-                    errno.ECONNRESET,
-                    self._receive_socket.fileno(),
-                    "the previous rank closed the connection",
-                )
+                raise RingError(errno.ECONNRESET, "the peer closed the connection")
             received += chunk
         return bytes(received)
-
-
-def _accept(
-    listener: socket.socket, expected_hello: str, accepted: list[socket.socket]
-) -> None:
-    """Accept the previous rank's connection, and say so, so that it knows it reached this
-    runner and not a stale one (an earlier runner of this instance, still alive, still
-    listening on the port)."""
-    while True:
-        connection = listener.accept()[0]
-        connection.settimeout(_HANDSHAKE_TIMEOUT)
-        try:
-            hello = _read_line(connection)
-            if hello == expected_hello:
-                connection.sendall(_READY)
-                connection.settimeout(None)
-                accepted.append(connection)
-                return
-        except OSError:
-            pass
-        connection.close()
 
 
 def _read_line(connection: socket.socket) -> str:
@@ -188,10 +171,11 @@ def _dial(
     proxy_port: int | None,
     source: NodeId,
     destination: NodeId,
-    hello: str,
+    rank: int,
 ) -> socket.socket:
-    """Connect to the next rank, retrying until that rank's runner answers the hello."""
-    while True:
+    """Connect to a lower neighbour, on MLX's schedule. Through the harness's proxy, an
+    attempt succeeds once the proxy has reached the neighbour's address."""
+    for wait in DIAL_BACKOFF_SECONDS:
         connection: socket.socket | None = None
         try:
             if proxy_port is None:
@@ -202,14 +186,15 @@ def _dial(
                     f"RING {source} {destination} {host} {port}\n".encode()
                 )
                 if _read_line(connection) != "OK":
-                    raise ConnectionError("the harness's proxy couldn't connect")
-            connection.settimeout(_HANDSHAKE_TIMEOUT)
-            connection.sendall(f"{hello}\n".encode())
-            if _read_line(connection).encode() + b"\n" == _READY:
-                connection.settimeout(None)
-                return connection
+                    raise ConnectionRefusedError("nothing listens at the address")
+            # Says which rank this is, so a rank with two neighbours tells them apart
+            connection.sendall(f"{rank}\n".encode())
+            return connection
         except OSError:
-            pass
-        if connection is not None:
-            connection.close()
-        time.sleep(_CONNECT_RETRY_SECONDS)
+            if connection is not None:
+                connection.close()
+        time.sleep(wait)
+    raise RuntimeError(
+        f"[ring] Couldn't connect to {host}:{port} "
+        f"(tried {len(DIAL_BACKOFF_SECONDS)} times)"
+    )

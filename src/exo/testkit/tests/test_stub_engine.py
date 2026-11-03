@@ -1,5 +1,6 @@
 """The stub engine on its own: deterministic replies, rank agreement, and losing a peer."""
 
+import re
 import socket
 import threading
 import time
@@ -24,13 +25,14 @@ from exo.shared.types.worker.runner_response import CancelledResponse, FinishedR
 from exo.shared.types.worker.runners import RunnerId, ShardAssignments
 from exo.shared.types.worker.shards import PipelineShardMetadata
 from exo.testkit.cluster import StubModel
+from exo.testkit.stub import ring as ring_module
 from exo.testkit.stub.directives import (
     Directives,
     expected_reply,
     parse_directives,
 )
 from exo.testkit.stub.engine import StubEngine
-from exo.testkit.stub.ring import Ring, RingError
+from exo.testkit.stub.ring import LOST_PEER_MESSAGE, Ring, RingError
 from exo.utils.channels import MpReceiver, mp_channel
 
 MODEL = ModelId("exo-testkit/stub-8l")
@@ -150,24 +152,29 @@ def test_a_cancelled_request_ends_with_a_cancellation() -> None:
     assert any(isinstance(result, CancelledResponse) for result in results)
 
 
-def _free_port_pair() -> int:
+def _free_ports_in_a_row(count: int) -> int:
     for _ in range(50):
-        with socket.socket() as first, socket.socket() as second:
-            first.bind(("0.0.0.0", 0))
-            port = int(first.getsockname()[1])  # pyright: ignore[reportAny]
-            try:
-                second.bind(("0.0.0.0", port + 1))
-            except OSError:
-                continue
+        sockets = [socket.socket() for _ in range(count)]
+        try:
+            sockets[0].bind(("0.0.0.0", 0))
+            port = int(sockets[0].getsockname()[1])  # pyright: ignore[reportAny]
+            for offset, each in enumerate(sockets[1:], start=1):
+                each.bind(("0.0.0.0", port + offset))
             return port
-    raise AssertionError("no two free ports in a row")
+        except OSError:
+            continue
+        finally:
+            for each in sockets:
+                each.close()
+    raise AssertionError(f"no {count} free ports in a row")
 
 
-def _two_rank_instance() -> tuple[BoundInstance, BoundInstance]:
-    port = _free_port_pair()
-    nodes = (NodeId("node-0"), NodeId("node-1"))
-    runners = (RunnerId("runner-0"), RunnerId("runner-1"))
+def _ring_instance(size: int) -> list[BoundInstance]:
+    port = _free_ports_in_a_row(size)
+    nodes = [NodeId(f"node-{rank}") for rank in range(size)]
+    runners = [RunnerId(f"runner-{rank}") for rank in range(size)]
     card = StubModel().card()
+    layers = 8 // size
     instance = MlxRingInstance(
         instance_id=InstanceId("instance"),
         shard_assignments=ShardAssignments(
@@ -176,47 +183,52 @@ def _two_rank_instance() -> tuple[BoundInstance, BoundInstance]:
                 runners[rank]: PipelineShardMetadata(
                     model_card=card,
                     device_rank=rank,
-                    world_size=2,
-                    start_layer=4 * rank,
-                    end_layer=4 * rank + 4,
+                    world_size=size,
+                    start_layer=layers * rank,
+                    end_layer=layers * rank + layers,
                     n_layers=8,
                 )
-                for rank in (0, 1)
+                for rank in range(size)
             },
             node_to_runner=dict(zip(nodes, runners, strict=True)),
         ),
         hosts_by_node={
-            nodes[0]: [Host(ip="0.0.0.0", port=port), Host(ip="127.0.0.1", port=port)],
-            nodes[1]: [Host(ip="127.0.0.1", port=port), Host(ip="0.0.0.0", port=port)],
+            node: [
+                Host(ip="0.0.0.0" if other == rank else "127.0.0.1", port=port)
+                for other in range(size)
+            ]
+            for rank, node in enumerate(nodes)
         },
         ephemeral_port=port,
     )
-    first, second = (
+    return [
         BoundInstance(
             instance=instance, bound_runner_id=runners[rank], bound_node_id=nodes[rank]
         )
-        for rank in (0, 1)
-    )
-    return first, second
+        for rank in range(size)
+    ]
 
 
-def _connect_both() -> tuple[Ring, Ring]:
-    first, second = _two_rank_instance()
+def _connect_all(size: int) -> list[Ring]:
+    bound = _ring_instance(size)
     rings: dict[int, Ring] = {}
 
-    def join(rank: int, bound: BoundInstance) -> None:
-        rings[rank] = Ring.connect(bound, proxy_port=None)
+    def join(rank: int) -> None:
+        rings[rank] = Ring.connect(bound[rank], proxy_port=None)
 
-    threads = [
-        threading.Thread(target=join, args=(rank, bound))
-        for rank, bound in enumerate((first, second))
-    ]
+    # As exo's workers do: every rank but the last first, then the last
+    threads = [threading.Thread(target=join, args=(rank,)) for rank in range(size)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(10)
-    assert set(rings) == {0, 1}, "the ranks didn't connect"
-    return rings[0], rings[1]
+    assert set(rings) == set(range(size)), "the ranks didn't connect"
+    return [rings[rank] for rank in range(size)]
+
+
+def _connect_both() -> tuple[Ring, Ring]:
+    first, second = _connect_all(2)
+    return first, second
 
 
 def test_two_ranks_agree_and_only_rank_zero_reports_tokens() -> None:
@@ -243,9 +255,66 @@ def test_two_ranks_agree_and_only_rank_zero_reports_tokens() -> None:
         ring.close()
 
 
-def test_a_rank_that_loses_its_peer_sees_a_failed_receive() -> None:
+def test_a_rank_that_loses_its_peer_fails_as_mlx_does() -> None:
     first, second = _connect_both()
     second.close()
-    with pytest.raises(RingError):
+    with pytest.raises(RingError, match=re.escape(LOST_PEER_MESSAGE)):
         first.all_gather(b"anyone there?")
     first.close()
+
+
+def test_three_ranks_gather_every_rank_s_payload() -> None:
+    rings = _connect_all(3)
+    gathered: dict[int, list[bytes]] = {}
+
+    def gather(rank: int) -> None:
+        gathered[rank] = rings[rank].all_gather(f"from {rank}".encode())
+
+    threads = [threading.Thread(target=gather, args=(rank,)) for rank in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    expected = [f"from {rank}".encode() for rank in range(3)]
+    assert gathered == {rank: expected for rank in range(3)}
+    for ring in rings:
+        ring.close()
+
+
+def test_the_connecting_rank_gives_up_on_mlx_s_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rank 1 of 2 connects; with nobody listening it tries 5 times, then fails."""
+    monkeypatch.setattr(ring_module, "DIAL_BACKOFF_SECONDS", (0.01,) * 5)
+    _, last = _ring_instance(2)
+    with pytest.raises(RuntimeError, match="Couldn't connect"):
+        Ring.connect(last, proxy_port=None)
+
+
+def test_a_second_runner_on_the_port_binds_and_waits() -> None:
+    """MLX listens with SO_REUSEPORT: a new runner can bind while an old one still listens."""
+    first, _ = _ring_instance(2)
+    port = (
+        first.instance.ephemeral_port
+        if isinstance(first.instance, MlxRingInstance)
+        else 0
+    )
+    old = socket.socket()
+    old.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    old.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    old.bind(("0.0.0.0", port))
+    old.listen()
+    joined: list[Ring] = []
+    waiting = threading.Thread(
+        target=lambda: joined.append(Ring.connect(first, proxy_port=None)), daemon=True
+    )
+    waiting.start()
+    waiting.join(0.5)
+    assert waiting.is_alive(), "rank 0 should be waiting in accept, not failing to bind"
+    old.close()
+    # Let it finish: whatever connects and says it is rank 1 pairs with it
+    with socket.create_connection(("127.0.0.1", port)) as peer:
+        peer.sendall(b"1\n")
+        waiting.join(5)
+        assert joined, "rank 0 never accepted"
+        joined[0].close()

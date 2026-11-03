@@ -184,7 +184,7 @@ class Node:
     @property
     def node_id(self) -> NodeId:
         # The first digit orders the nodes for elections: with nothing else to choose by,
-        # exo's election picks the largest id, so n0 is the first master
+        # exo's election picks the largest id, so n0 usually becomes the first master
         return NodeId(f"{0xF - self.index:x}{self.generation:02x}{self.run_token}")
 
     @property
@@ -379,8 +379,8 @@ class ChatHandle:
 class Cluster:
     """N exo nodes on this machine. Use it as a context manager; `start()` waits for a cluster.
 
-    Nodes are addressed by index (0 is n0). Unless a test arranges otherwise, n0 becomes the
-    first master (it has the largest id).
+    Nodes are addressed by index (0 is n0). n0 has the largest id, so on main it usually
+    becomes the first master; don't rely on it, ask `wait_for_master()`.
     """
 
     def __init__(
@@ -647,6 +647,17 @@ class Cluster:
         if new_identity:
             node.generation += 1
         self._spawn(node)
+
+    def configure_stub(
+        self, config: StubConfig, *, nodes: tuple[int, ...] | None = None
+    ) -> None:
+        """Set how the stub runners on these nodes (all by default) behave on their way to
+        serving, from their next phase on; a fault's use count starts again at 0."""
+        for index in nodes if nodes is not None else range(len(self.nodes)):
+            node = self.nodes[index]
+            write_config(node.stub_config_path, config)
+            node.stub_config_path.with_suffix(".faults").unlink(missing_ok=True)
+        self.note(f"stub config on {nodes or 'every node'}: {config}")
 
     # --- network cuts --------------------------------------------------------------------
 

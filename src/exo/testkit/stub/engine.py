@@ -6,8 +6,8 @@ statuses, the ranks agreeing on every step which requests to run and cancel (as 
 generators do), and the chunks the API streams. What is replaced: the model. Tokens come from
 `exo.testkit.stub.directives`, and the ranks exchange only those agreements over a TCP ring.
 
-A rank that loses its ring does what MLX's ring backend does: it reports the failed receive on
-stderr in MLX's words, then stops making progress. exo's supervisor recognises those lines.
+A rank that loses its ring fails as MLX's ring backend does, with "[ring] connection to a peer
+was lost" (see exo.testkit.stub.ring).
 """
 
 import json
@@ -42,7 +42,13 @@ from exo.shared.types.worker.runner_response import (
     FinishedResponse,
     ModelLoadingResponse,
 )
-from exo.testkit.stub.config import Phase, StubConfig, read_config, ring_proxy_port
+from exo.testkit.stub.config import (
+    Phase,
+    StubConfig,
+    claim_fault,
+    read_config,
+    ring_proxy_port,
+)
 from exo.testkit.stub.directives import (
     Directives,
     FaultKind,
@@ -51,7 +57,7 @@ from exo.testkit.stub.directives import (
     request_key,
     token_text,
 )
-from exo.testkit.stub.ring import Ring, RingError
+from exo.testkit.stub.ring import Ring
 from exo.utils.channels import MpReceiver, MpSender
 from exo.worker.disaggregated.server import PrefillRequest
 from exo.worker.engines.base import Builder, Engine
@@ -88,19 +94,6 @@ def fail(kind: FaultKind, where: str, stall_seconds: float) -> None:
             time.sleep(stall_seconds)
 
 
-def ring_lost(error: RingError) -> NoReturn:
-    """What MLX's ring backend does when a neighbour goes: report it, then never progress."""
-    for _ in range(3):
-        print(
-            f"[ring] Receiving from socket {error.file_descriptor} failed with errno "
-            f"{error.error_number}",
-            file=sys.stderr,
-            flush=True,
-        )
-    print("[ring] Too many send/recv errors. Aborting...", file=sys.stderr, flush=True)
-    _hang_forever()
-
-
 def _on_every_rank(gathered: list[dict[str, object]], key: str) -> set[str]:
     """The ids every rank listed under `key`: what the ranks agree on this step."""
     each_rank = [set(cast(list[str], rank[key])) for rank in gathered]
@@ -118,8 +111,12 @@ def prompt_of(task: TextGeneration) -> str:
     return ""
 
 
-def _phase(config: StubConfig, phase: Phase, seconds: float) -> None:
-    if config.fault_phase == phase:
+def _phase(config: StubConfig, phase: Phase, seconds: float, rank: int) -> None:
+    if (
+        config.fault_phase == phase
+        and config.fault_rank in (None, rank)
+        and claim_fault(config)
+    ):
         fail(config.fault, f"in {phase}", stall_seconds=seconds)
     time.sleep(seconds)
 
@@ -167,7 +164,7 @@ class StubEngine(Engine):
 
     def warmup(self) -> None:
         config = read_config()
-        _phase(config, "warmup", config.warmup_seconds)
+        _phase(config, "warmup", config.warmup_seconds, self.device_rank)
         self._gather({})
 
     def submit(self, task: GenerationTask) -> None:
@@ -327,10 +324,8 @@ class StubEngine(Engine):
     def _gather(self, payload: dict[str, object]) -> list[dict[str, object]]:
         if self.ring is None:
             return [payload]
-        try:
-            gathered = self.ring.all_gather(json.dumps(payload).encode())
-        except RingError as error:
-            ring_lost(error)
+        # A lost neighbour raises RingError, which ends this runner as MLX's exception does
+        gathered = self.ring.all_gather(json.dumps(payload).encode())
         return [cast(dict[str, object], json.loads(item)) for item in gathered]
 
 
@@ -348,7 +343,12 @@ class StubBuilder(Builder):
 
     def connect(self, bound_instance: BoundInstance) -> None:
         config = read_config()
-        _phase(config, "connect", config.connect_seconds)
+        _phase(
+            config,
+            "connect",
+            config.connect_seconds,
+            bound_instance.bound_shard.device_rank,
+        )
         self.ring = Ring.connect(bound_instance, ring_proxy_port())
 
     def load(self, bound_instance: BoundInstance) -> Generator[ModelLoadingResponse]:
@@ -356,17 +356,18 @@ class StubBuilder(Builder):
         shard = bound_instance.bound_shard
         self.device_rank, self.world_size = shard.device_rank, shard.world_size
         layers = max(1, shard.end_layer - shard.start_layer)
-        if config.fault_phase == "load":
+        if (
+            config.fault_phase == "load"
+            and config.fault_rank in (None, shard.device_rank)
+            and claim_fault(config)
+        ):
             fail(config.fault, "in load", stall_seconds=config.load_seconds)
         for layer in range(layers):
             time.sleep(config.load_seconds / layers)
             yield ModelLoadingResponse(layers_loaded=layer + 1, total=layers)
         if self.ring is not None:
             # Loading ends with the ranks waiting for each other, as sharded loading does
-            try:
-                self.ring.barrier()
-            except RingError as error:
-                ring_lost(error)
+            self.ring.barrier()
 
     def build(self) -> Engine:
         return StubEngine(

@@ -6,12 +6,16 @@ their network report, JOURNEYS #n a user-journey finding, and A1, B1, ... the fa
 the reliability review. The change that fixes one removes its marker; strict means an
 unexpected pass fails the run, so a fix can't go unnoticed.
 
+No scenario assumes which node is the master: each asks the cluster (`_roles`), and one that
+stops the master checks first that it is stopping the master.
+
 Timing bounds are what these scenarios measured on main, with a margin, and say so.
 Unmarked tests run in CI's default (fast) run; `slow` ones run nightly (`pytest -m slow`).
 """
 
 import threading
 import time
+from dataclasses import dataclass
 
 import pytest
 
@@ -24,6 +28,7 @@ from exo.testkit.cluster import (
     HarnessError,
     HarnessTimeoutError,
 )
+from exo.testkit.stub.config import StubConfig
 from exo.testkit.tests.conftest import MakeCluster
 
 pytestmark = pytest.mark.cluster
@@ -32,6 +37,32 @@ pytestmark = pytest.mark.cluster
 LONG = "[stub tokens=3000 rate=50]"
 # Seconds a running chat streams before the scenario's fault
 STREAM_FIRST = 3.0
+
+
+class ScenarioSetupError(Exception):
+    """The scenario didn't get the setup it is about (not an expected failure of exo's)."""
+
+
+@dataclass(frozen=True)
+class _Roles:
+    master: int
+    followers: tuple[int, ...]
+
+
+def _roles(cluster: Cluster) -> _Roles:
+    """The master every node follows, and the other nodes."""
+    master = cluster.wait_for_master(timeout=30)
+    return _Roles(
+        master, tuple(index for index in range(len(cluster.nodes)) if index != master)
+    )
+
+
+def _is_the_master(cluster: Cluster, index: int) -> None:
+    """Guard for a scenario about losing the master: it must be the master it stops."""
+    if cluster.master() != index:
+        raise ScenarioSetupError(
+            f"n{index} isn't the master the scenario is about: {cluster.masters()}"
+        )
 
 
 def _ok(result: ChatResult) -> None:
@@ -49,13 +80,24 @@ def _clean_error(result: ChatResult) -> None:
 def _streaming(cluster: Cluster, prompt: str, via: int) -> ChatHandle:
     handle = cluster.chat_in_background(prompt, via=via, timeout=150)
     time.sleep(STREAM_FIRST)
-    assert not handle.done(), "the chat ended before the fault"
+    if handle.done():
+        raise ScenarioSetupError(
+            f"the chat ended before the fault: {handle.result(1).summary()}"
+        )
     return handle
 
 
 def _instance_gone(cluster: Cluster, instance_id: InstanceId, via: int) -> bool:
     state = cluster.state(via)
     return state is not None and instance_id not in state.instances
+
+
+def _runner_statuses(cluster: Cluster, instance: InstanceId, via: int) -> list[str]:
+    state = cluster.state(via)
+    if state is None or instance not in state.instances:
+        return []
+    runners = state.instances[instance].shard_assignments.runner_to_shard
+    return [type(state.runners.get(runner)).__name__ for runner in runners]
 
 
 # --- serving ---------------------------------------------------------------------------
@@ -65,8 +107,9 @@ def test_every_node_serves_every_token(make_cluster: MakeCluster) -> None:
     """A single-node and a two-node (pipeline, ring) instance serve concurrent chats through
     every node's API, streamed and not, and every token arrives, in order."""
     cluster = make_cluster(3)
-    assert cluster.master() == 0
-    assert cluster.wait_for_master(timeout=5) == 0
+    master = cluster.wait_for_master(timeout=10)
+    assert cluster.master() == master
+    assert set(cluster.masters().values()) == {cluster.nodes[master].node_id}
     cluster.launch(on=(1,))
     cluster.launch(on=(0, 2))
     handles = [
@@ -92,18 +135,20 @@ def test_killing_a_follower_ends_its_requests_with_a_clean_error(
     master removes the node and deletes the instance (measured 16 s; bound 35 s) and nothing
     places it again; a new chat for the model fails at once. CLUSTER "kill -9 follower"."""
     cluster = make_cluster(3)
-    instance = cluster.launch(on=(1, 2))
-    chat = _streaming(cluster, "follower dies " + LONG, via=0)
+    roles = _roles(cluster)
+    a, b = roles.followers
+    instance = cluster.launch(on=(a, b))
+    chat = _streaming(cluster, "follower dies " + LONG, via=roles.master)
     killed_at = time.monotonic()
-    cluster.kill(2)
+    cluster.kill(b)
 
     result = chat.result(60)
     _clean_error(result)
     assert result.ended - killed_at < 15, result.summary()
 
     cluster.wait_until_consistent(timeout=35)
-    assert _instance_gone(cluster, instance, via=0)
-    after = cluster.chat("after the loss", via=0, timeout=10)
+    assert _instance_gone(cluster, instance, via=roles.master)
+    after = cluster.chat("after the loss", via=roles.master, timeout=10)
     assert after.status_code == 404, after.summary()
 
 
@@ -115,10 +160,12 @@ def test_killing_a_follower_ends_its_requests_with_a_clean_error(
 )
 def test_a_model_that_lost_a_node_is_placed_again(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
-    cluster.launch(on=(1, 2))
-    cluster.kill(2)
+    roles = _roles(cluster)
+    a, b = roles.followers
+    cluster.launch(on=(a, b))
+    cluster.kill(b)
     cluster.wait_for(
-        lambda: cluster.chat("anyone serving?", via=0, timeout=10).ok,
+        lambda: cluster.chat("anyone serving?", via=roles.master, timeout=10).ok,
         timeout=90,
         what="the model to serve again on the nodes that are left",
     )
@@ -131,21 +178,24 @@ def test_a_model_that_lost_a_node_is_placed_again(make_cluster: MakeCluster) -> 
 def test_killing_the_master_elects_a_new_one_and_fails_in_flight_chats(
     make_cluster: MakeCluster,
 ) -> None:
-    """kill -9 of the master while a chat streams from a healthy instance on another node.
+    """kill -9 of the master while a chat streams from a healthy instance on a follower.
     Main: the followers elect a new master only after the 30 s master-silence timeout
     (measured 32.4 s; bound 45 s), the chat fails when they do, and the dead master stays in
     every view until it times out (bound 90 s). CLUSTER #1, #2; A1, A2, B3."""
     cluster = make_cluster(3)
-    cluster.launch(on=(1,))
-    chat = _streaming(cluster, "master dies " + LONG, via=2)
+    roles = _roles(cluster)
+    serving, asking = roles.followers
+    cluster.launch(on=(serving,))
+    chat = _streaming(cluster, "master dies " + LONG, via=asking)
+    _is_the_master(cluster, roles.master)
     killed_at = time.monotonic()
-    cluster.kill(0)
+    cluster.kill(roles.master)
 
-    new_master = cluster.wait_for_master(timeout=45, other_than=0)
-    assert new_master in (1, 2)
+    new_master = cluster.wait_for_master(timeout=45, other_than=roles.master)
+    assert new_master in roles.followers
     _clean_error(chat.result(60))
     cluster.wait_until_consistent(timeout=90)
-    _ok(cluster.chat("after the new master", via=2, timeout=30))
+    _ok(cluster.chat("after the new master", via=asking, timeout=30))
     assert time.monotonic() - killed_at < 140
 
 
@@ -159,8 +209,10 @@ def test_killing_the_master_elects_a_new_one_and_fails_in_flight_chats(
 )
 def test_a_crashed_master_is_replaced_within_5s(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
-    cluster.kill(0)
-    cluster.wait_for_master(timeout=5, other_than=0)
+    master = _roles(cluster).master
+    _is_the_master(cluster, master)
+    cluster.kill(master)
+    cluster.wait_for_master(timeout=5, other_than=master)
 
 
 @pytest.mark.xfail(
@@ -173,11 +225,15 @@ def test_a_crashed_master_is_replaced_within_5s(make_cluster: MakeCluster) -> No
 def test_a_master_change_keeps_chats_on_healthy_instances(
     make_cluster: MakeCluster,
 ) -> None:
-    """The master quits while a chat streams from an instance on another node."""
+    """The master quits while a chat streams from an instance on a follower, asked through
+    the other follower."""
     cluster = make_cluster(3)
-    cluster.launch(on=(1,))
-    chat = _streaming(cluster, "master quits [stub tokens=500 rate=50]", via=2)
-    cluster.quit(0)
+    roles = _roles(cluster)
+    serving, asking = roles.followers
+    cluster.launch(on=(serving,))
+    chat = _streaming(cluster, "master quits [stub tokens=500 rate=50]", via=asking)
+    _is_the_master(cluster, roles.master)
+    cluster.quit(roles.master)
     _ok(chat.result(60))
 
 
@@ -189,9 +245,11 @@ def test_quitting_the_master_elects_a_new_one_quickly(
     but it stays in every view until it times out (measured 19.7 s; bound 40 s). CLUSTER
     "Graceful quit, master"; B2."""
     cluster = make_cluster(3)
+    master = _roles(cluster).master
+    _is_the_master(cluster, master)
     quit_at = time.monotonic()
-    cluster.quit(0)
-    cluster.wait_for_master(timeout=15, other_than=0)
+    cluster.quit(master)
+    cluster.wait_for_master(timeout=15, other_than=master)
     cluster.wait_until_consistent(timeout=40)
     assert time.monotonic() - quit_at < 60
 
@@ -207,10 +265,13 @@ def test_a_launch_sent_while_the_master_dies_is_placed(
     make_cluster: MakeCluster,
 ) -> None:
     cluster = make_cluster(3)
-    cluster.kill(0)
+    roles = _roles(cluster)
+    follower = roles.followers[0]
+    _is_the_master(cluster, roles.master)
+    cluster.kill(roles.master)
     # The follower's API accepts the launch ("Command received.") and only the dead master
     # hears it; the master elected after the 30 s silence timeout never does
-    cluster.place(on=(1,), via=1, timeout=90)
+    cluster.place(on=(follower,), via=follower, timeout=90)
 
 
 # --- a follower quits ------------------------------------------------------------------
@@ -225,11 +286,15 @@ def test_quitting_a_follower_ends_its_requests_and_removes_it(
     (measured 8.6 s; bound 20 s); the master removes the node (measured 14.5 s; bound 35 s).
     CLUSTER "Graceful quit, follower"; B2."""
     cluster = make_cluster(3)
-    cluster.launch(on=(1, 2))
-    chat = _streaming(cluster, "follower quits " + LONG, via=0)
+    roles = _roles(cluster)
+    a, b = roles.followers
+    cluster.launch(on=(a, b))
+    chat = _streaming(cluster, "follower quits " + LONG, via=roles.master)
     quit_at = time.monotonic()
-    assert cluster.quit(2) < 15
-    late = cluster.chat_in_background("sent after the quit " + LONG, via=0, timeout=60)
+    assert cluster.quit(b) < 15
+    late = cluster.chat_in_background(
+        "sent after the quit " + LONG, via=roles.master, timeout=60
+    )
     for result in (chat.result(60), late.result(60)):
         _clean_error(result)
         assert result.ended - quit_at < 20, result.summary()
@@ -245,7 +310,7 @@ def test_quitting_a_follower_ends_its_requests_and_removes_it(
 )
 def test_a_node_that_quits_leaves_every_view_at_once(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
-    cluster.quit(2)
+    cluster.quit(_roles(cluster).followers[0])
     cluster.wait_until_consistent(timeout=3)
 
 
@@ -254,13 +319,17 @@ def test_a_node_that_quits_leaves_every_view_at_once(make_cluster: MakeCluster) 
 
 def _pause_holding_half_an_instance(
     cluster: Cluster, seconds: float
-) -> tuple[InstanceId, ChatResult]:
-    instance = cluster.launch(on=(1, 2))
-    chat = _streaming(cluster, f"sleeps {seconds:g}s " + LONG, via=0)
-    cluster.pause(2)
+) -> tuple[InstanceId, ChatResult, int]:
+    """A follower holding half of a two-node instance sleeps (SIGSTOP) for `seconds` while a
+    chat streams through the master. Returns the instance, the chat and the master."""
+    roles = _roles(cluster)
+    a, b = roles.followers
+    instance = cluster.launch(on=(a, b))
+    chat = _streaming(cluster, f"sleeps {seconds:g}s " + LONG, via=roles.master)
+    cluster.pause(b)
     time.sleep(seconds)
-    cluster.resume(2)
-    return instance, chat.result(120)
+    cluster.resume(b)
+    return instance, chat.result(120), roles.master
 
 
 @pytest.mark.xfail(
@@ -272,10 +341,10 @@ def _pause_holding_half_an_instance(
 )
 def test_a_10s_pause_keeps_the_model(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
-    instance, _ = _pause_holding_half_an_instance(cluster, 10)
+    instance, _, master = _pause_holding_half_an_instance(cluster, 10)
     time.sleep(20)
-    assert not _instance_gone(cluster, instance, via=0), "the model was deleted"
-    _ok(cluster.chat("after the pause", via=0, timeout=30))
+    assert not _instance_gone(cluster, instance, via=master), "the model was deleted"
+    _ok(cluster.chat("after the pause", via=master, timeout=30))
 
 
 @pytest.mark.slow
@@ -285,21 +354,13 @@ def test_a_40s_pause_removes_the_node_and_it_rejoins(make_cluster: MakeCluster) 
     as its own master (D1), then merges back (measured +56 s; bound 60 s after waking) with
     no ghosts. CLUSTER "60 s / 300 s sleep, follower"."""
     cluster = make_cluster(3)
-    instance, result = _pause_holding_half_an_instance(cluster, 40)
+    instance, result, master = _pause_holding_half_an_instance(cluster, 40)
     _clean_error(result)
     cluster.wait_until_consistent(timeout=60)
-    assert _instance_gone(cluster, instance, via=0)
+    assert _instance_gone(cluster, instance, via=master)
 
 
-# --- runner faults -------------------------------------------------------------------
-
-
-def _runner_statuses(cluster: Cluster, instance: InstanceId, via: int) -> list[str]:
-    state = cluster.state(via)
-    if state is None or instance not in state.instances:
-        return []
-    runners = state.instances[instance].shard_assignments.runner_to_shard
-    return [type(state.runners.get(runner)).__name__ for runner in runners]
+# --- runner faults ---------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("rank", [0, 1])
@@ -325,31 +386,50 @@ def test_a_runner_that_crashes_mid_reply_ends_it_and_its_instance_recovers(
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    raises=EXPECTED_FAILURES,
-    reason="Found by this harness: after rank 0 raises mid-reply, the replacement runners "
-    "pair with the stopping ones; one ends RunnerConnected to a dead peer and the other "
-    "RunnerIdle, which the worker's plan never moves on (connect needs every runner Idle "
-    "or Connecting, load needs every runner Connected), so the instance never serves "
-    "again, its chats hang, and the stopped runners' ConnectToGroup tasks stay Running",
-)
-def test_a_runner_that_raises_mid_reply_leaves_its_instance_serving_again(
+def test_a_runner_that_raises_mid_reply_ends_it_and_its_instance_recovers(
     make_cluster: MakeCluster,
 ) -> None:
+    """Rank 0 of a two-node instance raises mid-reply; rank 1 then loses its ring and raises
+    too, as MLX does. Main: the chat ends with an error and the workers rebuild the
+    instance (bound 30 s; about 6 s with MLX on real hardware, where each node starts its
+    replacement twice)."""
     cluster = make_cluster(3)
     instance = cluster.launch(on=(1, 2))
     result = cluster.chat(
         "raise [stub tokens=200 rate=50 fault=raise at=10 rank=0]", via=0, timeout=60
     )
     _clean_error(result)
+    cluster.wait_ready(instance, timeout=30)
+    _ok(cluster.chat("after the exception", via=0, timeout=30))
+    cluster.wait_until_consistent(timeout=30)
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(
+    strict=True,
+    raises=EXPECTED_FAILURES,
+    reason="Seen with MLX 0.32.4 on real hardware: rank 1 raises while it connects and "
+    "rank 0 waits in ring init; rank 1's replacement pairs with rank 0's old process, "
+    "which is shutting down, so rank 0 ends RunnerIdle and rank 1 RunnerConnected for "
+    "good. The worker's plan never moves on (connect needs every runner Idle or "
+    "Connecting, load needs every runner Connected), chats get 503, and a ConnectToGroup "
+    "task stays Running",
+)
+def test_a_runner_that_fails_to_connect_once_leaves_its_instance_serving(
+    make_cluster: MakeCluster,
+) -> None:
+    cluster = make_cluster(3)
+    cluster.configure_stub(
+        StubConfig(fault_phase="connect", fault="raise", fault_rank=1, fault_limit=1)
+    )
+    instance = cluster.place(on=(1, 2))
     try:
-        cluster.wait_ready(instance, timeout=60)
+        cluster.wait_ready(instance, timeout=90)
     except HarnessTimeoutError as error:
         raise AssertionError(
             f"{error}; runners {_runner_statuses(cluster, instance, 0)}"
         ) from error
-    _ok(cluster.chat("after the exception", via=0, timeout=30))
+    _ok(cluster.chat("after the failed connect", via=0, timeout=30))
     cluster.wait_until_consistent(timeout=30)
 
 
@@ -359,17 +439,19 @@ def test_a_runner_that_raises_mid_reply_leaves_its_instance_serving_again(
 def test_a_restarted_node_leaves_no_ghost_and_no_instance(
     make_cluster: MakeCluster,
 ) -> None:
-    """kill -9 of a node holding an instance, restarted at once: exo gives it a new id, so it
-    comes back as a new device. Main: the old id lingers as a ghost (measured 15.6 s) and its
-    instance is deleted when it times out (16.1 s); bound 45 s. JOURNEYS #10; E1."""
+    """kill -9 of a follower holding an instance, restarted at once: exo gives it a new id,
+    so it comes back as a new device. Main: the old id lingers as a ghost (measured 15.6 s)
+    and its instance is deleted when it times out (16.1 s); bound 45 s. JOURNEYS #10; E1."""
     cluster = make_cluster(3)
-    instance = cluster.launch(on=(2,))
-    old_id = cluster.nodes[2].node_id
-    cluster.kill(2)
-    cluster.restart(2)
-    assert cluster.nodes[2].node_id != old_id
+    roles = _roles(cluster)
+    node = roles.followers[-1]
+    instance = cluster.launch(on=(node,))
+    old_id = cluster.nodes[node].node_id
+    cluster.kill(node)
+    cluster.restart(node)
+    assert cluster.nodes[node].node_id != old_id
     cluster.wait_until_consistent(timeout=45)
-    assert _instance_gone(cluster, instance, via=0)
+    assert _instance_gone(cluster, instance, via=roles.master)
 
 
 # --- races -----------------------------------------------------------------------------
@@ -382,16 +464,17 @@ def test_a_chat_sent_as_its_instance_is_deleted_never_hangs(
     view still holds the instance. Before #2560 some of these hung forever (CLUSTER #3:
     4/12 on main 63760522, 12/12 on the candidate); each must now end within 15 s."""
     cluster = make_cluster(2)
+    follower = _roles(cluster).followers[0]
     for trial in range(12):
-        instance = cluster.launch(on=(1,), via=1)
+        instance = cluster.launch(on=(follower,), via=follower)
         results: list[ChatResult] = []
 
         def chat(trial: int, results: list[ChatResult]) -> None:
-            results.append(cluster.chat(f"race {trial}", via=1, timeout=15))
+            results.append(cluster.chat(f"race {trial}", via=follower, timeout=15))
 
         sender = threading.Timer(trial / 1000, chat, args=(trial, results))
         sender.start()
-        assert cluster.delete(instance, via=1).status_code == 200
+        assert cluster.delete(instance, via=follower).status_code == 200
         sender.join(20)
         assert results, f"trial {trial}: the chat didn't return"
         (result,) = results
@@ -400,7 +483,7 @@ def test_a_chat_sent_as_its_instance_is_deleted_never_hangs(
         )
         assert not result.problems(), result.problems()
         cluster.wait_for(
-            lambda deleted=instance: _instance_gone(cluster, deleted, via=1),
+            lambda deleted=instance: _instance_gone(cluster, deleted, via=follower),
             timeout=10,
             what="the deletion",
         )
@@ -419,11 +502,13 @@ def test_a_cut_node_crowns_itself_and_rejoins_after_the_heal(
     instance (~16 s); after the heal it merges back with one master and no ghosts (measured
     3.5 s; bound 30 s). NETWORK N1, N2; D2."""
     cluster = make_cluster(3)
-    instance = cluster.launch(on=(1, 2))
-    chat = _streaming(cluster, "cut off " + LONG, via=0)
-    cluster.isolate(2)
+    roles = _roles(cluster)
+    a, b = roles.followers
+    instance = cluster.launch(on=(a, b))
+    chat = _streaming(cluster, "cut off " + LONG, via=roles.master)
+    cluster.isolate(b)
     cluster.wait_for(
-        lambda: cluster.nodes[2].master() == cluster.nodes[2].node_id,
+        lambda: cluster.nodes[b].master() == cluster.nodes[b].node_id,
         timeout=25,
         what="the cut node to make itself master",
     )
@@ -431,7 +516,7 @@ def test_a_cut_node_crowns_itself_and_rejoins_after_the_heal(
     time.sleep(max(0.0, 20 - STREAM_FIRST))
     cluster.heal()
     cluster.wait_until_consistent(timeout=30)
-    assert _instance_gone(cluster, instance, via=0)
+    assert _instance_gone(cluster, instance, via=roles.master)
 
 
 @pytest.mark.slow
@@ -444,12 +529,16 @@ def test_a_cut_node_crowns_itself_and_rejoins_after_the_heal(
 )
 def test_a_20s_cut_keeps_the_model(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
-    instance = cluster.launch(on=(1, 2))
-    cluster.isolate(2)
+    roles = _roles(cluster)
+    a, b = roles.followers
+    instance = cluster.launch(on=(a, b))
+    cluster.isolate(b)
     time.sleep(20)
     cluster.heal()
     cluster.wait_until_consistent(timeout=30)
-    assert not _instance_gone(cluster, instance, via=0), "the model was deleted"
+    assert not _instance_gone(cluster, instance, via=roles.master), (
+        "the model was deleted"
+    )
 
 
 # --- configuration ---------------------------------------------------------------------

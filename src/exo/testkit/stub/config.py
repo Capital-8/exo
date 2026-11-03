@@ -25,9 +25,31 @@ class StubConfig(BaseModel):
     connect_seconds: float = 0.0
     load_seconds: float = 0.0
     warmup_seconds: float = 0.0
-    # A fault the runner meets in one phase, every time it gets there
+    # A fault the runner meets in one phase: on every rank, or only on `fault_rank`; every
+    # time, or only the first `fault_limit` times on this node (a replacement runner then
+    # gets through)
     fault_phase: Phase | None = None
     fault: FaultKind = "none"
+    fault_rank: int | None = None
+    fault_limit: int | None = None
+
+
+def claim_fault(config: StubConfig) -> bool:
+    """Whether this runner meets the configured fault now, counting it against the limit."""
+    if config.fault_limit is None:
+        return True
+    path = config_path()
+    if path is None:
+        return True
+    counter = path.with_suffix(".faults")
+    try:
+        used = int(counter.read_text() or "0")
+    except (FileNotFoundError, ValueError):
+        used = 0
+    if used >= config.fault_limit:
+        return False
+    counter.write_text(str(used + 1))
+    return True
 
 
 def config_path() -> Path | None:

@@ -31,10 +31,12 @@ pytestmark = pytest.mark.cluster
 
 def test_killing_a_follower_ends_its_chat(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)                    # started, one master, edges: ready
-    instance = cluster.launch(on=(1, 2))         # a 2-node pipeline ring instance, ready
-    chat = cluster.chat_in_background("story [stub tokens=3000 rate=50]", via=0)
+    master = cluster.wait_for_master(timeout=30) # never assume which node it is
+    a, b = (i for i in range(3) if i != master)
+    instance = cluster.launch(on=(a, b))         # a 2-node pipeline ring instance, ready
+    chat = cluster.chat_in_background("story [stub tokens=3000 rate=50]", via=master)
     time.sleep(3)
-    cluster.kill(2)                              # kill -9 of n2 and its runners
+    cluster.kill(b)                              # kill -9 of that node and its runners
     result = chat.result(timeout=60)
     assert not result.ok and not result.problems()   # clean error, no corrupted tokens
     cluster.wait_until_consistent(timeout=35)    # one master, no ghosts, no leaked tasks
@@ -66,7 +68,10 @@ clusters on the machine run the same command line.
 
 ## The `Cluster` API (exo/testkit/cluster.py)
 
-Nodes are addressed by index; `n0` has the largest id, so it is the first master.
+Nodes are addressed by index. `n0` has the largest id, so on main it usually becomes the
+first master, but that depends on the election and on which link opens first: look the master
+up (`wait_for_master()`) and pick followers from the rest. A scenario that stops the master
+should check, just before, that the node it stops is still the master.
 
 | what | call |
 |---|---|
