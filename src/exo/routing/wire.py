@@ -15,8 +15,10 @@ matches them; its docstring says what to do.
 """
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
+from types import ModuleType
 from typing import Final, Literal, final
 
 from exo import __version__
@@ -34,11 +36,26 @@ DEFAULT_CLUSTER_NAME: Final = "exo"
 BUILD_ID_ENV: Final = "EXO_BUILD_ID"
 
 
-def _installed(distribution: str) -> str:
+# The module whose ``__version__`` names a runner package's version when its package metadata is
+# missing: the release bundle carries the modules but not their metadata
+_VERSION_MODULES: Final = {"mlx": "mlx.core", "mlx-lm": "mlx_lm"}
+
+
+def _installed(
+    distribution: str,
+    metadata_version: Callable[[str], str] = version,
+    load_module: Callable[[str], ModuleType] = import_module,
+) -> str:
     try:
-        return version(distribution)
+        return metadata_version(distribution)
     except PackageNotFoundError:
+        pass
+    try:
+        module = load_module(_VERSION_MODULES[distribution])
+    except ImportError:
         return "none"
+    found: object = getattr(module, "__version__", None)
+    return found if isinstance(found, str) and found else "none"
 
 
 def build_id(environ: Mapping[str, str] = os.environ) -> str:
@@ -46,9 +63,10 @@ def build_id(environ: Mapping[str, str] = os.environ) -> str:
 
     The macOS app passes its own in ``EXO_BUILD_ID``. A source build is named by exo's package
     version and the exact MLX and mlx-lm versions it runs (a git build's version names its
-    revision), not by a git commit: developers running one lockfile on several machines
-    connect. That assumes source builds of one package version run the same exo code; two
-    checkouts that change what a model's ranks send each other must not run together.
+    revision; a frozen build without package metadata reads them from the modules), not by a
+    git commit: developers running one lockfile on several machines connect. That assumes
+    source builds of one package version run the same exo code; two checkouts that change what
+    a model's ranks send each other must not run together.
     """
     given = environ.get(BUILD_ID_ENV, "").strip()
     if given:
