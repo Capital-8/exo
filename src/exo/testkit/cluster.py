@@ -75,7 +75,26 @@ _PASSED_THROUGH_ENV = ("EXO_RESOURCES_DIR",)
 
 
 class HarnessError(Exception):
-    pass
+    """Something the harness couldn't do, or a wait that ended badly."""
+
+
+class HarnessTimeoutError(HarnessError):
+    """A wait for the cluster to do something ran out of time."""
+
+
+class NodeExitedError(HarnessError):
+    """A node the harness started exited without being told to (or was killed from outside)."""
+
+
+class ClusterStartError(HarnessError):
+    """The nodes didn't form a cluster: nothing a scenario says about exo can be trusted."""
+
+
+# What an xfail(strict=True) scenario may fail with: a broken expectation or a wait that
+# timed out. Anything else (a node killed from outside, a cluster that never formed, a bug in
+# the test) fails the run instead of passing as the expected failure:
+#     @pytest.mark.xfail(strict=True, raises=EXPECTED_FAILURES, reason="...")
+EXPECTED_FAILURES = (AssertionError, HarnessTimeoutError)
 
 
 @final
@@ -346,7 +365,7 @@ class ChatHandle:
     def result(self, timeout: float) -> ChatResult:
         self._thread.join(timeout)
         if self._thread.is_alive():
-            raise HarnessError(f"the chat didn't end within {timeout:.0f}s")
+            raise HarnessTimeoutError(f"the chat didn't end within {timeout:.0f}s")
         if self._error is not None:
             raise self._error
         assert self._result is not None
@@ -404,6 +423,9 @@ class Cluster:
                 )
             )
         self._stub = stub or StubConfig()
+        # One keep-alive client for polling and control: a new connection per poll would
+        # leave thousands of sockets in TIME_WAIT on a busy machine
+        self._http = httpx.Client(timeout=_HTTP_TIMEOUT)
 
     # --- lifecycle -----------------------------------------------------------------------
 
@@ -425,7 +447,10 @@ class Cluster:
         atexit.register(self.close)
         for node in self.nodes:
             self._spawn(node)
-        self.wait_for_cluster(timeout=timeout, require_edges=require_edges)
+        try:
+            self.wait_for_cluster(timeout=timeout, require_edges=require_edges)
+        except HarnessError as error:
+            raise ClusterStartError(f"the cluster didn't form: {error}") from error
 
     def close(self) -> None:
         """Stop every node (gracefully, then by force) and the network."""
@@ -446,6 +471,7 @@ class Cluster:
                 node.process.wait(5)
             node.status = "stopped"
         self.network.stop()
+        self._http.close()
         with contextlib.suppress(Exception):
             atexit.unregister(self.close)
 
@@ -649,7 +675,7 @@ class Cluster:
     def get(
         self, index: int, path: str, timeout: float = _HTTP_TIMEOUT
     ) -> httpx.Response:
-        return httpx.get(self.nodes[index].url + path, timeout=timeout)
+        return self._http.get(self.nodes[index].url + path, timeout=timeout)
 
     def state(self, index: int, timeout: float = _HTTP_TIMEOUT) -> State | None:
         """The node's view of the cluster; None if it doesn't answer."""
@@ -676,7 +702,7 @@ class Cluster:
         devices); otherwise exo places it."""
         before = set(self._instances(via))
         if on is None:
-            response = httpx.post(
+            response = self._http.post(
                 self.nodes[via].url + "/place_instance",
                 content=PlaceInstanceParams(
                     model_id=model, sharding=sharding, min_nodes=min_nodes
@@ -686,7 +712,7 @@ class Cluster:
             )
         else:
             instance = self.preview(on, model=model, sharding=sharding, via=via)
-            response = httpx.post(
+            response = self._http.post(
                 self.nodes[via].url + "/instance",
                 content=CreateInstanceParams(instance=instance).model_dump_json(),
                 headers={"content-type": "application/json"},
@@ -712,7 +738,7 @@ class Cluster:
         via: int = 0,
     ) -> Instance:
         wanted = {self.nodes[i].node_id for i in on}
-        response = httpx.get(
+        response = self._http.get(
             self.nodes[via].url + "/instance/previews",
             params=[
                 ("model_id", model),
@@ -778,7 +804,7 @@ class Cluster:
 
     def delete(self, instance_id: InstanceId, via: int = 0) -> httpx.Response:
         self.note(f"delete {instance_id} via n{via}")
-        return httpx.delete(
+        return self._http.delete(
             f"{self.nodes[via].url}/instance/{instance_id}", timeout=_HTTP_TIMEOUT
         )
 
@@ -899,7 +925,9 @@ class Cluster:
             if value:
                 return value
             if time.monotonic() > deadline:
-                raise HarnessError(f"timed out after {timeout:.0f}s waiting for {what}")
+                raise HarnessTimeoutError(
+                    f"timed out after {timeout:.0f}s waiting for {what}"
+                )
             time.sleep(_POLL_SECONDS)
 
     def check_alive(self) -> None:
@@ -912,7 +940,7 @@ class Cluster:
                 node.status = "stopped"
                 tail = node.output_path.read_text(errors="replace")[-2000:]
                 self.note(f"{node.name} exited by itself with code {code}")
-                raise HarnessError(f"{node.name} exited with code {code}:\n{tail}")
+                raise NodeExitedError(f"{node.name} exited with code {code}:\n{tail}")
 
     def masters(self) -> dict[str, NodeId | None]:
         """Which master each running node follows, by node name."""
@@ -1036,8 +1064,8 @@ class Cluster:
 
         try:
             self.wait_for(consistent, timeout=timeout, what="the cluster to agree")
-        except HarnessError as error:
-            raise HarnessError(f"{error}: {last}") from error
+        except HarnessTimeoutError as error:
+            raise HarnessTimeoutError(f"{error}: {last}") from error
         took = time.monotonic() - started
         self.note(f"consistent after {took:.1f}s")
         return took

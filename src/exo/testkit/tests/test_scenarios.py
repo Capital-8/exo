@@ -16,7 +16,14 @@ import time
 import pytest
 
 from exo.shared.types.worker.instances import InstanceId
-from exo.testkit.cluster import ChatHandle, ChatResult, Cluster, HarnessError
+from exo.testkit.cluster import (
+    EXPECTED_FAILURES,
+    ChatHandle,
+    ChatResult,
+    Cluster,
+    HarnessError,
+    HarnessTimeoutError,
+)
 from exo.testkit.tests.conftest import MakeCluster
 
 pytestmark = pytest.mark.cluster
@@ -102,6 +109,7 @@ def test_killing_a_follower_ends_its_requests_with_a_clean_error(
 @pytest.mark.slow
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="C1: a lost model is never placed again (CLUSTER #7: 48 manual relaunches in 2 h)",
 )
 def test_a_model_that_lost_a_node_is_placed_again(make_cluster: MakeCluster) -> None:
@@ -143,6 +151,7 @@ def test_killing_the_master_elects_a_new_one_and_fails_in_flight_chats(
 @pytest.mark.slow
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="A1/B3: followers wait out the 30 s master-silence timeout (CLUSTER #1: "
     "'30 s freeze in 2 of 3 cases'; the zenoh liveliness token of a crashed router "
     "isn't deleted in 3+ node meshes)",
@@ -155,6 +164,7 @@ def test_a_crashed_master_is_replaced_within_5s(make_cluster: MakeCluster) -> No
 
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="A2: every change of master ends every in-flight request, graceful quit "
     "included (CLUSTER #2: 6/6 failed; 16-22% of soak failures were on instances that "
     "lost no node)",
@@ -188,6 +198,7 @@ def test_quitting_the_master_elects_a_new_one_quickly(
 @pytest.mark.slow
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="C3: commands accepted while the master dies are dropped, never resent "
     "(CLUSTER #8; membership REPORT section 2: 2/2 launches never appeared on main)",
 )
@@ -227,6 +238,7 @@ def test_quitting_a_follower_ends_its_requests_and_removes_it(
 @pytest.mark.slow
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="B2: a graceful quit isn't announced; the node and its models stay listed "
     "for the 15 s silence timeout (CLUSTER #9)",
 )
@@ -252,6 +264,7 @@ def _pause_holding_half_an_instance(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="B1: a pause of about 11 s or more removes the node and deletes its models "
     "(CLUSTER #5: a 10 s sleep failed 13 of 19 requests; the harness measured removal "
     "at +16 s)",
@@ -313,6 +326,7 @@ def test_a_runner_that_crashes_mid_reply_ends_it_and_its_instance_recovers(
 @pytest.mark.slow
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="Found by this harness: after rank 0 raises mid-reply, the replacement runners "
     "pair with the stopping ones; one ends RunnerConnected to a dead peer and the other "
     "RunnerIdle, which the worker's plan never moves on (connect needs every runner Idle "
@@ -330,8 +344,10 @@ def test_a_runner_that_raises_mid_reply_leaves_its_instance_serving_again(
     _clean_error(result)
     try:
         cluster.wait_ready(instance, timeout=60)
-    except HarnessError as error:
-        pytest.fail(f"{error}; runners {_runner_statuses(cluster, instance, 0)}")
+    except HarnessTimeoutError as error:
+        raise AssertionError(
+            f"{error}; runners {_runner_statuses(cluster, instance, 0)}"
+        ) from error
     _ok(cluster.chat("after the exception", via=0, timeout=30))
     cluster.wait_until_consistent(timeout=30)
 
@@ -420,6 +436,7 @@ def test_a_cut_node_crowns_itself_and_rejoins_after_the_heal(
 @pytest.mark.slow
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="B1/D2: a node cut off for longer than ~11 s loses its models, and the cut "
     "node deletes every model in its own view (NETWORK N1, N2; membership REPORT "
     "section 2: a 20 s cut deleted at +16 s on main)",
@@ -440,6 +457,7 @@ def test_a_20s_cut_keeps_the_model(make_cluster: MakeCluster) -> None:
 @pytest.mark.slow
 @pytest.mark.xfail(
     strict=True,
+    raises=EXPECTED_FAILURES,
     reason="Found by this harness: each node probes its peers' /node_id at its own "
     "--api-port, so nodes started with different API ports never get a topology edge, and "
     "every placement across them is refused",
@@ -451,4 +469,5 @@ def test_nodes_with_different_api_ports_can_run_a_model_together(
     try:
         cluster.launch(on=(0, 1), timeout=30)
     except HarnessError as error:
-        pytest.fail(str(error))
+        # The placement preview finds no ring placement across the two: no edges
+        raise AssertionError(str(error)) from error

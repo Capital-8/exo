@@ -2,6 +2,7 @@
 
 import socket
 import threading
+import time
 
 import pytest
 
@@ -104,6 +105,27 @@ def test_one_rank_generates_exactly_the_expected_tokens() -> None:
     assert [chunk.finish_reason for chunk in chunks] == [None] * 6 + ["stop"]
     assert chunks[-1].usage is not None and chunks[-1].usage.completion_tokens == 7
     assert isinstance(results[-1], FinishedResponse)
+
+
+def test_the_rate_holds_when_sleeps_run_late(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under load macOS stretches short sleeps (a 20 ms sleep took 127 ms on a busy Mac): the
+    stub makes up for late steps instead of falling behind."""
+    real_sleep = time.sleep
+
+    def late_sleep(seconds: float) -> None:
+        real_sleep(seconds + 0.1)
+
+    monkeypatch.setattr(time, "sleep", late_sleep)
+    prompt = "steady [stub tokens=50 rate=50]"
+    engine = StubEngine(MODEL, 0, 1, None, _cancels())
+    started = time.monotonic()
+    results = _run(engine, _task(prompt))
+    took = time.monotonic() - started
+    assert "".join(r.text for r in results if isinstance(r, TokenChunk)) == (
+        expected_reply(prompt).text
+    )
+    # 50 tokens at 50 a second: the last is due after 0.98 s
+    assert 0.9 < took < 1.3, f"{took:.2f}s"
 
 
 def test_max_tokens_cuts_the_reply_short() -> None:

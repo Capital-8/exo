@@ -56,6 +56,10 @@ from exo.utils.channels import MpReceiver, MpSender
 from exo.worker.disaggregated.server import PrefillRequest
 from exo.worker.engines.base import Builder, Engine
 
+# The most of a late step's backlog the stub makes up for (see _Request.tokens_due): far
+# above any sleep's slack, well below the shortest pause a test makes on purpose
+_MAX_CATCH_UP_SECONDS = 1.0
+
 
 def _hang_forever() -> NoReturn:
     while True:
@@ -133,6 +137,19 @@ class _Request:
     started: float = 0.0
     fault_done: bool = False
 
+    def tokens_due(self, now: float) -> int:
+        """How many tokens this request owes by now. Sleeps run late (macOS stretches a
+        20 ms sleep past 100 ms under load), so a step makes every token that came due
+        since the last one, and the rate holds. A backlog longer than a pause in a real
+        model's output (this runner was stopped, or stalled on purpose) is dropped instead:
+        the reply carries on at its rate rather than in a burst."""
+        if now < self.due:
+            return 0
+        if now - self.due > _MAX_CATCH_UP_SECONDS:
+            self.due = now
+        owed = 1 + int((now - self.due) * self.directives.rate)
+        return min(owed, self.length - self.next_index)
+
 
 @final
 @dataclass(eq=False)
@@ -169,19 +186,19 @@ class StubEngine(Engine):
                 cancel_all = True
             else:
                 self._maybe_cancel.add(task_id)
-        # Rank 0 decides which requests make a token this step, so every rank finishes each
-        # request at the same step and the ranks never fall out of step with each other
-        due = [
-            task_id
+        # Rank 0 decides how many tokens each request makes this step, so every rank finishes
+        # each request at the same step and the ranks never fall out of step with each other
+        due = {
+            str(task_id): count
             for task_id, request in self._active.items()
-            if request.due <= now and self.device_rank == 0
-        ]
+            if self.device_rank == 0 and (count := request.tokens_due(now))
+        }
         gathered = self._gather(
             {
                 "tasks": [str(task.task_id) for task in self._maybe_queue],
                 "cancel": sorted(str(task_id) for task_id in self._maybe_cancel),
                 "cancel_all": cancel_all,
-                "due": [str(task_id) for task_id in due],
+                "due": due,
             }
         )
         output: list[tuple[TaskId, Chunk | CancelledResponse | FinishedResponse]] = []
@@ -197,10 +214,12 @@ class StubEngine(Engine):
                 del self._active[task_id]
                 output.append((task_id, CancelledResponse()))
 
-        due_now = cast(list[str], gathered[0]["due"])
-        for task_id in due_now:
-            request = self._active.get(TaskId(task_id))
-            if request is not None:
+        due_now = cast(dict[str, int], gathered[0]["due"])
+        for task_id, count in due_now.items():
+            for _ in range(count):
+                request = self._active.get(TaskId(task_id))
+                if request is None:
+                    break
                 output.extend(self._next_token(request, now))
 
         agreed = _on_every_rank(gathered, "tasks")
@@ -259,7 +278,7 @@ class StubEngine(Engine):
                 directives.stall_seconds,
             )
         request.next_index += 1
-        request.due = max(request.due + 1.0 / directives.rate, now)
+        request.due += 1.0 / directives.rate
         task_id = request.task.task_id
         last = request.next_index >= request.length
         output: list[tuple[TaskId, Chunk | CancelledResponse | FinishedResponse]] = []

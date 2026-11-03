@@ -8,8 +8,8 @@ with deterministic tokens, so a test can check every token a client receives.
 ## Run the tests
 
 ```bash
-uv run pytest src/exo/testkit                  # fast set (also part of the default run): ~3 min
-uv run pytest src/exo/testkit -m slow          # nightly set: ~10 min
+uv run pytest src/exo/testkit                  # fast set (also part of the default run): ~4 min
+uv run pytest src/exo/testkit -m slow          # nightly set: ~11 min
 uv run pytest -m "not slow and not cluster"    # everything except cluster tests
 ```
 
@@ -41,10 +41,28 @@ def test_killing_a_follower_ends_its_chat(make_cluster: MakeCluster) -> None:
 ```
 
 Write the expectation as what main does today. For a failure main still has, write the
-behaviour you want and mark the test `@pytest.mark.xfail(strict=True, reason=...)`, citing
-the evidence. The PR that fixes it deletes the marker; strict means an unexpected pass fails
+behaviour you want and mark the test
+`@pytest.mark.xfail(strict=True, raises=EXPECTED_FAILURES, reason=...)` (from
+`exo.testkit.cluster`), citing the evidence. The PR that fixes it deletes the marker; strict means an unexpected pass fails
 the run. Give each timing bound the value you measured and the margin you added, in the
 docstring. Mark tests that take more than about 30 s `@pytest.mark.slow`; they run nightly.
+
+### Timing on a busy machine
+
+Several clusters often share one machine (CI runners, or several agents at once), and under
+load macOS stretches short sleeps and timers: a 20 ms sleep has been seen to take 127 ms.
+The stub keeps its token rate anyway, by catching up on late steps (up to 1 s of backlog,
+so a stopped runner still resumes at its rate instead of in a burst). exo's own asyncio
+timers in the nodes stretch the same way, so give sub-second bounds a generous margin, and
+derive bounds from exo's constants (the 15 s node timeout, the 30 s master silence)
+rather than from measured sub-second times.
+
+xfail markers name what the test may fail with, `raises=EXPECTED_FAILURES` (an assertion or
+a `HarnessTimeoutError`): a node that dies on its own (`NodeExitedError`) or a cluster that
+never forms (`ClusterStartError`) then fails the run instead of passing as the expected
+failure. Only signal processes the harness started: `kill`, `pause` and `quit` act on the
+node's own process group, recorded when it was spawned. Never `pkill` by pattern; other
+clusters on the machine run the same command line.
 
 ## The `Cluster` API (exo/testkit/cluster.py)
 
