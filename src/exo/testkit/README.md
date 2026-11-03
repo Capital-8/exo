@@ -45,13 +45,13 @@ def test_killing_a_follower_ends_its_chat(make_cluster: MakeCluster) -> None:
 Write the expectation as what main does today. For a failure main still has, write the
 behaviour you want and mark the test
 `@pytest.mark.xfail(strict=True, raises=EXPECTED_FAILURES, reason=...)` (from
-`exo.testkit.cluster`), citing the evidence. The PR that fixes it deletes the marker; strict means an unexpected pass fails
+`exo.testkit.cluster`), saying what goes wrong and what was measured. The PR that fixes it deletes the marker; strict means an unexpected pass fails
 the run. Give each timing bound the value you measured and the margin you added, in the
 docstring. Mark tests that take more than about 30 s `@pytest.mark.slow`; they run nightly.
 
 ### Timing on a busy machine
 
-Several clusters often share one machine (CI runners, or several agents at once), and under
+Several clusters often share one machine (CI runners, or several test runs at once), and under
 load macOS stretches short sleeps and timers: a 20 ms sleep has been seen to take 127 ms.
 The stub keeps its token rate anyway, by catching up on late steps (up to 1 s of backlog,
 so a stopped runner still resumes at its rate instead of in a burst). exo's own asyncio

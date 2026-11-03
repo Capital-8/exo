@@ -1,10 +1,9 @@
 """Cluster scenarios on real exo nodes (exo.testkit), with main's behaviour as the expectation.
 
-Tests marked xfail(strict=True) are failures exo has today. Each cites its evidence from the
-chaos runs on real Macs: CLUSTER #n is an issue in their cluster report, NETWORK Nn a row of
-their network report, JOURNEYS #n a user-journey finding, and A1, B1, ... the failure ids of
-the reliability review. The change that fixes one removes its marker; strict means an
-unexpected pass fails the run, so a fix can't go unnoticed.
+Tests marked xfail are failures exo has today. Each says what goes wrong and what was
+measured, in this harness and in chaos runs on a cluster of real Macs. The change that fixes
+one removes its marker; strict means an unexpected pass fails the run, so a fix can't go
+unnoticed.
 
 No scenario assumes which node is the master: each asks the cluster (`_roles`), and one that
 stops the master checks first that it is stopping the master.
@@ -180,7 +179,8 @@ def test_killing_a_follower_ends_its_requests_with_a_clean_error(
     """kill -9 of a follower holding half of a two-node instance. Main: the in-flight chat
     ends with an error (measured 3.6 s; bound 15 s: the supervisor checks every 5 s); the
     master removes the node and deletes the instance (measured 16 s; bound 35 s) and nothing
-    places it again; a new chat for the model fails at once. CLUSTER "kill -9 follower"."""
+    places it again; a new chat for the model fails at once. On real Macs: removed after
+    15-17 s, with clean errors."""
     cluster = make_cluster(3)
     roles = _roles(cluster)
     a, b = roles.followers
@@ -203,7 +203,8 @@ def test_killing_a_follower_ends_its_requests_with_a_clean_error(
 @pytest.mark.xfail(
     strict=True,
     raises=EXPECTED_FAILURES,
-    reason="C1: a lost model is never placed again (CLUSTER #7: 48 manual relaunches in 2 h)",
+    reason="A model that lost a node is never placed again (2 h of chaos on real Macs took "
+    "48 manual relaunches)",
 )
 def test_a_model_that_lost_a_node_is_placed_again(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
@@ -228,7 +229,8 @@ def test_killing_the_master_elects_a_new_one_and_fails_in_flight_chats(
     """kill -9 of the master while a chat streams from a healthy instance on a follower.
     Main: the followers elect a new master only after the 30 s master-silence timeout
     (measured 32.4 s; bound 45 s), the chat fails when they do, and the dead master stays in
-    every view until it times out (bound 90 s). CLUSTER #1, #2; A1, A2, B3."""
+    every view until it times out (bound 90 s). On real Macs: the same 30 s freeze in 2
+    of 3 master kills, and the dead master listed for 30-59 s."""
     cluster = make_cluster(3)
     roles = _roles(cluster)
     serving, asking = roles.followers
@@ -250,9 +252,9 @@ def test_killing_the_master_elects_a_new_one_and_fails_in_flight_chats(
 @pytest.mark.xfail(
     strict=True,
     raises=EXPECTED_FAILURES,
-    reason="A1/B3: followers often wait out the 30 s master-silence timeout (CLUSTER #1: "
-    "'30 s freeze in 2 of 3 cases'; the zenoh liveliness token of a crashed router "
-    "isn't always deleted in 3+ node meshes; about 9 in 10 kills in the harness)",
+    reason="After a master crash the followers usually wait out the 30 s master-silence "
+    "timeout: the zenoh liveliness token of a crashed router isn't always deleted in a mesh "
+    "of three or more (about 9 kills in 10 here, 2 in 3 on real Macs)",
 )
 def test_a_crashed_master_is_replaced_within_5s(make_cluster: MakeCluster) -> None:
     """Three crashes of the master in a row, each replaced within 5 s. The freeze doesn't
@@ -276,9 +278,9 @@ def test_a_crashed_master_is_replaced_within_5s(make_cluster: MakeCluster) -> No
 @pytest.mark.xfail(
     strict=True,
     raises=EXPECTED_FAILURES,
-    reason="A2: every change of master ends every in-flight request, graceful quit "
-    "included (CLUSTER #2: 6/6 failed; 16-22% of soak failures were on instances that "
-    "lost no node)",
+    reason="Every change of master ends every in-flight request, a graceful quit "
+    "included (6 of 6 failed on real Macs, where 16-22% of failed requests in a 2 h soak "
+    "were on instances that lost no node)",
 )
 def test_a_master_change_keeps_chats_on_healthy_instances(
     make_cluster: MakeCluster,
@@ -300,8 +302,8 @@ def test_quitting_the_master_elects_a_new_one_quickly(
     make_cluster: MakeCluster,
 ) -> None:
     """Main: a master that quits is replaced within seconds (measured 4.4 s; bound 15 s),
-    but it stays in every view until it times out (measured 19.7 s; bound 40 s). CLUSTER
-    "Graceful quit, master"; B2."""
+    and since #2582 it leaves every view at once; before, it stayed listed until it timed
+    out (measured 19.7 s). Bound 40 s for the views to agree."""
     cluster = make_cluster(3)
     master = _roles(cluster).master
     _is_the_master(cluster, master)
@@ -319,8 +321,8 @@ def test_a_launch_sent_while_the_master_is_unreachable_is_placed(
     """The master is cut off (blackhole) and a follower's API takes a launch at once. The
     followers notice the master is gone only when zenoh's 10 s lease runs out, so the
     launch first goes to the cut-off master alone. Before #2581 it was lost: commands were
-    sent once and answered "Command received." at once (2 of 2 launches never appeared in
-    the chaos runs on real Macs). Since #2581 the API sends it again, also to the next
+    sent once and answered "Command received." at once (2 of 2 such launches never appeared
+    on real Macs). Since #2581 the API sends it again, also to the next
     master, and answers only once it is placed (within its 46 s CLUSTER_COMMAND_TIMEOUT)."""
     cluster = make_cluster(3)
     roles = _roles(cluster)
@@ -357,8 +359,8 @@ def test_quitting_a_follower_ends_its_requests_and_removes_it(
 ) -> None:
     """A follower holding half of a two-node instance quits (SIGINT). Main: it exits in a few
     seconds; the in-flight chat and a chat sent after it left both end with an error
-    (measured 8.6 s; bound 20 s); the master removes the node (measured 14.5 s; bound 35 s).
-    CLUSTER "Graceful quit, follower"; B2."""
+    (measured 8.6 s; bound 20 s); the node leaves every view (at once since #2582, 14.5 s
+    before; bound 35 s)."""
     cluster = make_cluster(3)
     roles = _roles(cluster)
     a, b = roles.followers
@@ -406,9 +408,8 @@ def _pause_holding_half_an_instance(
 @pytest.mark.xfail(
     strict=True,
     raises=EXPECTED_FAILURES,
-    reason="B1: a pause of about 11 s or more removes the node and deletes its models "
-    "(CLUSTER #5: a 10 s sleep failed 13 of 19 requests; the harness measured removal "
-    "at +16 s)",
+    reason="A pause of about 11 s or more removes the node and deletes its models "
+    "(removed at +16 s here; on real Macs a 10 s sleep failed 13 of 19 requests)",
 )
 def test_a_10s_pause_keeps_the_model(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
@@ -422,8 +423,9 @@ def test_a_10s_pause_keeps_the_model(make_cluster: MakeCluster) -> None:
 def test_a_40s_pause_removes_the_node_and_it_rejoins(make_cluster: MakeCluster) -> None:
     """SIGSTOP of a follower holding half of an instance for 40 s. Main: the in-flight chat
     fails, the node is removed and its instance deleted (~16 s); on waking it briefly runs
-    as its own master (D1), then merges back (measured +56 s; bound 60 s after waking) with
-    no ghosts. CLUSTER "60 s / 300 s sleep, follower"."""
+    as its own master, then merges back (measured +56 s; bound 60 s after waking) with no
+    ghosts. On real Macs, 60 s and 300 s sleeps: removed at 17-18 s, merged back in 17-29 s,
+    once after 72 s as its own master."""
     cluster = make_cluster(3)
     instance, result, master = _pause_holding_half_an_instance(cluster, 40)
     _clean_error(result)
@@ -548,7 +550,8 @@ def test_a_restarted_node_leaves_no_ghost_and_no_instance(
 ) -> None:
     """kill -9 of a follower holding an instance, restarted at once: exo gives it a new id,
     so it comes back as a new device. Main: the old id lingers as a ghost (measured 15.6 s)
-    and its instance is deleted when it times out (16.1 s); bound 45 s. JOURNEYS #10; E1."""
+    and its instance is deleted when it times out (16.1 s); bound 45 s. On real Macs the
+    ghost lasted 7-11 s."""
     cluster = make_cluster(3)
     roles = _roles(cluster)
     node = roles.followers[-1]
@@ -568,8 +571,8 @@ def test_a_chat_sent_as_its_instance_is_deleted_never_hangs(
     make_cluster: MakeCluster,
 ) -> None:
     """DELETE /instance and, 0-12 ms later, a chat for the same model, through a follower whose
-    view still holds the instance. Before #2560 some of these hung forever (CLUSTER #3:
-    4/12 on main 63760522, 12/12 on the candidate); each must now end within 15 s."""
+    view still holds the instance. Before #2560 some of these hung forever (4 of 12 trials
+    on real Macs); each must now end within 15 s."""
     cluster = make_cluster(2)
     follower = _roles(cluster).followers[0]
     for trial in range(12):
@@ -605,9 +608,9 @@ def test_a_cut_node_crowns_itself_and_rejoins_after_the_heal(
 ) -> None:
     """A follower holding half of an instance is cut off from both others (blackhole) for
     20 s. Main: the cut node makes itself master of a one-node cluster (measured +13.4 s;
-    NETWORK N2: +13.6-13.9 s on real hosts), the majority removes it and deletes the
-    instance (~16 s); after the heal it merges back with one master and no ghosts (measured
-    3.5 s; bound 30 s). NETWORK N1, N2; D2."""
+    +13.6-13.9 s with real network cuts between Macs), the majority removes it and deletes
+    the instance (~16 s); after the heal it merges back with one master and no ghosts
+    (measured 3.5 s; bound 30 s)."""
     cluster = make_cluster(3)
     roles = _roles(cluster)
     a, b = roles.followers
@@ -630,9 +633,9 @@ def test_a_cut_node_crowns_itself_and_rejoins_after_the_heal(
 @pytest.mark.xfail(
     strict=True,
     raises=EXPECTED_FAILURES,
-    reason="B1/D2: a node cut off for longer than ~11 s loses its models, and the cut "
-    "node deletes every model in its own view (NETWORK N1, N2; membership REPORT "
-    "section 2: a 20 s cut deleted at +16 s on main)",
+    reason="A node cut off for longer than about 11 s loses its models, and the cut node "
+    "deletes every model in its own view (a 20 s cut deleted them at +16 s here and with "
+    "real network cuts between Macs)",
 )
 def test_a_20s_cut_keeps_the_model(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
