@@ -2,8 +2,6 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 use zenoh::{Result, Session as ZSession, config::Locator};
-use zenoh_plugin_storage_manager::StoragesPlugin;
-use zenoh_plugin_trait::PluginsManager;
 
 pub use zenoh::{Config, config::ZenohId};
 
@@ -38,18 +36,6 @@ pub fn cfg(identity: &str, listen_port: u16) -> Result<zenoh::Config> {
     //cfg.insert_json5("transport/link/tx/batch_size", "9216")?;
     cfg.insert_json5("transport/link/rx/buffer_size", "16777216")?;
     //cfg.insert_json5("timestamping/enabled", "true")?;
-    cfg.insert_json5("plugins/storage_manager/__required__", "true")?;
-    cfg.insert_json5(
-        "plugins/storage_manager/storages/mem1",
-        r#"{
-            key_expr: "storage/mem1/**",
-            strip_prefix: "storage/mem1",
-            volume: "memory",
-            replication: {
-                interval: 2,
-            }
-        }"#,
-    )?;
     Ok(cfg)
 }
 
@@ -68,10 +54,7 @@ pub async fn open(
     assert!(listen_port != 0, "must used defined listen port");
     let cluster = ClusterKey::new(namespace, wire_version, build_id, pre_gate_namespace);
     let other_versions = OtherVersions::default();
-    let mut plugins = PluginsManager::static_plugins_only();
-    plugins.declare_static_plugin::<StoragesPlugin, _>("storage_manager", true);
     let mut runtime = zenoh::internal::runtime::RuntimeBuilder::new(cfg)
-        .plugins_manager(plugins)
         .build()
         .await?;
     let z = zenoh::session::init(runtime.clone().into()).await?;
@@ -136,4 +119,18 @@ pub struct Session {
     /// Devices discovery hears in this namespace that run another wire version.
     pub other_versions: OtherVersions,
     _jh: Arc<AbortOnDrop>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// exo uses zenoh for pub/sub and liveliness only. A plugin marked required that fails to
+    /// start makes zenoh panic, taking the whole node down, so none is configured.
+    #[test]
+    fn the_session_config_has_no_plugins() {
+        let config = cfg("1234abcd", 52414).expect("a valid config");
+        let plugins = config.get_json("plugins").expect("plugins is a config key");
+        assert_eq!(plugins, "{}");
+    }
 }
