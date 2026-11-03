@@ -1,10 +1,10 @@
 """Cluster scenarios on real exo nodes (exo.testkit), with main's behaviour as the expectation.
 
-Tests marked xfail(strict=True) are failures exo has today. Each cites its evidence: the
-chaos runs on real Macs (CLUSTER = chaos-nov3/cluster/CLUSTER-RESULTS.md "Ranked issues",
-NETWORK = NETWORK-RESULTS.md) and the architecture review's failure ids (A1, B1, ...). The step
-of the redesign that fixes one removes its marker; strict means an unexpected pass fails the run,
-so a fix can't go unnoticed.
+Tests marked xfail(strict=True) are failures exo has today. Each cites its evidence from the
+chaos runs on real Macs: CLUSTER #n is an issue in their cluster report, NETWORK Nn a row of
+their network report, JOURNEYS #n a user-journey finding, and A1, B1, ... the failure ids of
+the reliability review. The change that fixes one removes its marker; strict means an
+unexpected pass fails the run, so a fix can't go unnoticed.
 
 Timing bounds are what these scenarios measured on main, with a margin, and say so.
 Unmarked tests run in CI's default (fast) run; `slow` ones run nightly (`pytest -m slow`).
