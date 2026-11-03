@@ -5061,7 +5061,8 @@
           >
             <p class="text-xs text-white/80 mb-2">
               A device on your network uses this cluster's name but runs another
-              version of exo, so it can't join this cluster.
+              version or build of exo, so it can't join this cluster. Mixing
+              versions in one cluster isn't supported.
             </p>
             <div class="text-xs text-white/60 mb-2">
               {#each devicesOnOtherVersions.slice(0, 4) as device}
@@ -5074,8 +5075,8 @@
               {/if}
             </div>
             <p class="text-xs text-white/60">
-              <span class="text-yellow-300">Suggested action:</span> Update every
-              device to the same version of exo.
+              <span class="text-yellow-300">Suggested action:</span> Update both devices
+              to the same version of exo.
             </p>
           </div>
         </div>

@@ -3,7 +3,7 @@
  * because they run another version of exo (GET /v1/devices-on-other-versions).
  */
 
-export type OtherVersionReason = "older_exo" | "wire_version" | "mlx_release";
+export type OtherVersionReason = "older_exo" | "wire_version" | "build";
 
 export type DeviceOnOtherVersion = {
   /** Every address it was heard on: one per network interface */
@@ -30,7 +30,7 @@ export const OTHER_VERSIONS_TIMEOUT_MS = 5_000;
 const REASONS: readonly OtherVersionReason[] = [
   "older_exo",
   "wire_version",
-  "mlx_release",
+  "build",
 ];
 
 /** The devices in the endpoint's answer; anything unexpected reads as none. */
@@ -75,8 +75,8 @@ export function describeDevice(device: DeviceOnOtherVersion): string {
       return `${where} runs an older exo`;
     case "wire_version":
       return `${where} runs exo wire version ${device.wireVersion ?? "?"}`;
-    case "mlx_release":
-      return `${where} runs exo with another MLX release`;
+    case "build":
+      return `${where} runs another build of exo`;
   }
 }
 
@@ -97,8 +97,18 @@ export async function fetchDevicesOnOtherVersions(
 }
 
 /**
+ * How many asks in a row may fail before the list is dropped. A failed ask
+ * keeps the last list, so one slow answer doesn't make the notice flicker; 3
+ * asks (30 s) is about as long as exo itself keeps listing a device after its
+ * last Hello, so a device that left isn't shown much longer than that.
+ */
+export const OTHER_VERSIONS_FAILED_ASKS_BEFORE_DROPPING = 3;
+
+/**
  * Asks every `intervalMs`, never twice at once, so an old answer can't arrive
- * after a newer one. A failed ask keeps the last list. Returns a stop function.
+ * after a newer one. A failed ask keeps the last list, until
+ * `OTHER_VERSIONS_FAILED_ASKS_BEFORE_DROPPING` in a row drop it. Returns a stop
+ * function.
  */
 export function pollDevicesOnOtherVersions(
   onDevices: (devices: DeviceOnOtherVersion[]) => void,
@@ -108,12 +118,21 @@ export function pollDevicesOnOtherVersions(
 ): () => void {
   let asking = false;
   let stopped = false;
+  let failedInARow = 0;
   const ask = async () => {
     if (asking || stopped) return;
     asking = true;
     try {
       const devices = await fetchDevices();
-      if (devices !== null && !stopped) onDevices(devices);
+      if (stopped) return;
+      if (devices !== null) {
+        failedInARow = 0;
+        onDevices(devices);
+      } else if (
+        ++failedInARow === OTHER_VERSIONS_FAILED_ASKS_BEFORE_DROPPING
+      ) {
+        onDevices([]);
+      }
     } finally {
       asking = false;
     }

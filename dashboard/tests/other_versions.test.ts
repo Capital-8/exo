@@ -18,20 +18,17 @@ test("reads one entry per device", () => {
   assert.deepEqual(
     parseDevicesOnOtherVersions({
       wireVersion: 1,
-      mlxRelease: "0.32.4",
+      buildId: "1.0.72 (4f1c2a9)",
       devices: [
         {
           addresses: ["fe80::1", "fe80::2", "fe80::3"],
           reason: "wire_version",
           wireVersion: 2,
         },
-        { addresses: ["fe80::9"], reason: "mlx_release", wireVersion: null },
+        { addresses: ["fe80::9"], reason: "build", wireVersion: null },
       ],
     }),
-    [
-      device,
-      { addresses: ["fe80::9"], reason: "mlx_release", wireVersion: null },
-    ],
+    [device, { addresses: ["fe80::9"], reason: "build", wireVersion: null }],
   );
 });
 
@@ -58,10 +55,10 @@ test("says what each device runs, once per device", () => {
   assert.equal(
     describeDevice({
       addresses: ["fe80::9"],
-      reason: "mlx_release",
+      reason: "build",
       wireVersion: null,
     }),
-    "fe80::9 runs exo with another MLX release",
+    "fe80::9 runs another build of exo",
   );
   assert.equal(
     describeDevice({
@@ -118,6 +115,43 @@ test("never asks twice at once, and stops when told", async () => {
     assert.deepEqual(seen, [[device]]);
     mock.timers.tick(100);
     assert.equal(answers.length, 3);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("three failed asks in a row drop the list", async () => {
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const answers: Array<(devices: DeviceOnOtherVersion[] | null) => void> = [];
+    const seen: DeviceOnOtherVersion[][] = [];
+    const stop = pollDevicesOnOtherVersions(
+      (devices) => seen.push(devices),
+      10,
+      () => new Promise((resolve) => answers.push(resolve)),
+    );
+    const settle = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+    answers[0]([device]);
+    await settle();
+    // Two failures keep the list; the third drops it
+    for (const ask of [1, 2, 3]) {
+      mock.timers.tick(10);
+      answers[ask](null);
+      await settle();
+    }
+    assert.deepEqual(seen, [[device], []]);
+    // A success counts again from zero
+    mock.timers.tick(10);
+    answers[4]([device]);
+    await settle();
+    mock.timers.tick(10);
+    answers[5](null);
+    await settle();
+    assert.deepEqual(seen, [[device], [], [device]]);
+    stop();
   } finally {
     mock.timers.reset();
   }
