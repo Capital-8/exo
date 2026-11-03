@@ -37,6 +37,8 @@ pytestmark = pytest.mark.cluster
 LONG = "[stub tokens=3000 rate=50]"
 # Seconds a running chat streams before the scenario's fault
 STREAM_FIRST = 3.0
+# A launch meant to race zenoh's 10 s lease must be sent well within it
+LAUNCH_WITHIN_LEASE = 5.0
 
 
 class ScenarioSetupError(Exception):
@@ -90,6 +92,11 @@ def _streaming(cluster: Cluster, prompt: str, via: int) -> ChatHandle:
 def _instance_gone(cluster: Cluster, instance_id: InstanceId, via: int) -> bool:
     state = cluster.state(via)
     return state is not None and instance_id not in state.instances
+
+
+def _instance_present(cluster: Cluster, instance_id: InstanceId, via: int) -> bool:
+    state = cluster.state(via)
+    return state is not None and instance_id in state.instances
 
 
 def _runner_statuses(cluster: Cluster, instance: InstanceId, via: int) -> list[str]:
@@ -224,16 +231,27 @@ def test_killing_the_master_elects_a_new_one_and_fails_in_flight_chats(
 @pytest.mark.xfail(
     strict=True,
     raises=EXPECTED_FAILURES,
-    reason="A1/B3: followers wait out the 30 s master-silence timeout (CLUSTER #1: "
+    reason="A1/B3: followers often wait out the 30 s master-silence timeout (CLUSTER #1: "
     "'30 s freeze in 2 of 3 cases'; the zenoh liveliness token of a crashed router "
-    "isn't deleted in 3+ node meshes)",
+    "isn't always deleted in 3+ node meshes; about 9 in 10 kills in the harness)",
 )
 def test_a_crashed_master_is_replaced_within_5s(make_cluster: MakeCluster) -> None:
+    """Three crashes of the master in a row, each replaced within 5 s. The freeze doesn't
+    happen on every crash, so one crash could pass by chance; three rarely do (~1 in 1000
+    on main)."""
     cluster = make_cluster(3)
-    master = _roles(cluster).master
-    _is_the_master(cluster, master)
-    cluster.kill(master)
-    cluster.wait_for_master(timeout=5, other_than=master)
+    for _ in range(3):
+        master = _roles(cluster).master
+        _is_the_master(cluster, master)
+        cluster.kill(master)
+        cluster.wait_for_master(timeout=5, other_than=master)
+        cluster.restart(master)
+        try:
+            cluster.wait_for_cluster(timeout=60)
+        except HarnessTimeoutError as error:
+            raise ScenarioSetupError(
+                f"the restarted node didn't rejoin: {error}"
+            ) from error
 
 
 @pytest.mark.xfail(
@@ -279,20 +297,33 @@ def test_quitting_the_master_elects_a_new_one_quickly(
 @pytest.mark.xfail(
     strict=True,
     raises=EXPECTED_FAILURES,
-    reason="C3: commands accepted while the master dies are dropped, never resent "
-    "(CLUSTER #8; membership REPORT section 2: 2/2 launches never appeared on main)",
+    reason="C3: commands accepted while the master can't be reached are dropped, never "
+    "resent (CLUSTER #8: launches sent around a master's death never appeared; "
+    "membership REPORT section 2: 2/2 lost on main)",
 )
-def test_a_launch_sent_while_the_master_dies_is_placed(
+def test_a_launch_sent_while_the_master_is_unreachable_is_placed(
     make_cluster: MakeCluster,
 ) -> None:
+    """The master is cut off (blackhole) and a follower's API takes a launch at once. The
+    followers notice the master is gone only when zenoh's 10 s lease runs out, so the
+    launch goes to the cut-off master alone; the master they elect next must still place
+    it. (A kill would usually do the same, but when the crashed master's liveliness token
+    goes at once the API holds the launch through the election and nothing is lost.)"""
     cluster = make_cluster(3)
     roles = _roles(cluster)
     follower = roles.followers[0]
+    instance = cluster.preview((follower,), via=follower)
     _is_the_master(cluster, roles.master)
-    cluster.kill(roles.master)
-    # The follower's API accepts the launch ("Command received.") and only the dead master
-    # hears it; the master elected after the 30 s silence timeout never does
-    cluster.place(on=(follower,), via=follower, timeout=90)
+    cluster.isolate(roles.master)
+    cut_at = time.monotonic()
+    cluster.create(instance, via=follower)
+    if time.monotonic() - cut_at > LAUNCH_WITHIN_LEASE:
+        raise ScenarioSetupError("the launch went out too late to race the lease")
+    cluster.wait_for(
+        lambda: _instance_present(cluster, instance.instance_id, via=follower),
+        timeout=90,
+        what="the launch to be placed by the next master",
+    )
 
 
 # --- a follower quits ------------------------------------------------------------------
@@ -364,7 +395,7 @@ def test_a_10s_pause_keeps_the_model(make_cluster: MakeCluster) -> None:
     cluster = make_cluster(3)
     instance, _, master = _pause_holding_half_an_instance(cluster, 10)
     time.sleep(20)
-    assert not _instance_gone(cluster, instance, via=master), "the model was deleted"
+    assert _instance_present(cluster, instance, via=master), "the model was deleted"
     _ok(cluster.chat("after the pause", via=master, timeout=30))
 
 
@@ -412,17 +443,20 @@ def test_a_runner_that_crashes_mid_reply_ends_it_and_its_instance_recovers(
     raises=EXPECTED_FAILURES,
     reason="Found by this harness: after one rank crashes, each node stops its fresh "
     "replacement runner while the other node's runner still shows RunnerFailed, and "
-    "stopping it marks it Failed in turn: the nodes ping-pong. With runners that take 3 s "
-    "to start (importing MLX and the model code takes seconds) they never both come up, "
-    "and after 6 rounds the worker gives up and deletes the instance. A fast-set run at "
-    "load average ~50 showed the same ping-pong without any start delay",
+    "stopping it marks it Failed in turn: the nodes ping-pong. When runners take longer "
+    "to start than the 3 s shutdown grace (importing MLX and the model code can), every "
+    "replacement is killed before it can stop cleanly, and after 6 rounds the worker gives "
+    "up and deletes the instance. A fast-set run at load average ~50 showed the same "
+    "ping-pong without any start delay",
 )
 def test_a_rank_crash_with_slow_runner_starts_leaves_its_instance_serving(
     make_cluster: MakeCluster,
 ) -> None:
     cluster = make_cluster(3)
     instance = cluster.launch(on=(1, 2))
-    cluster.configure_stub(StubConfig(start_seconds=3))
+    # Above worker.main.RUNNER_SHUTDOWN_GRACE (3 s): a replacement still starting can't stop
+    # cleanly when it is told to, and is killed (at exactly 3 s the outcome is a race)
+    cluster.configure_stub(StubConfig(start_seconds=8))
     result = cluster.chat(
         "slow starts [stub tokens=200 rate=50 fault=crash at=10 rank=0]",
         via=0,
@@ -430,7 +464,7 @@ def test_a_rank_crash_with_slow_runner_starts_leaves_its_instance_serving(
     )
     _clean_error(result)
     try:
-        cluster.wait_ready(instance, timeout=60)
+        cluster.wait_ready(instance, timeout=120)
     except HarnessTimeoutError as error:
         gone = _instance_gone(cluster, instance, via=0)
         raise AssertionError(f"{error}; instance deleted: {gone}") from error
@@ -588,7 +622,7 @@ def test_a_20s_cut_keeps_the_model(make_cluster: MakeCluster) -> None:
     time.sleep(20)
     cluster.heal()
     cluster.wait_until_consistent(timeout=30)
-    assert not _instance_gone(cluster, instance, via=roles.master), (
+    assert _instance_present(cluster, instance, via=roles.master), (
         "the model was deleted"
     )
 

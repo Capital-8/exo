@@ -759,12 +759,7 @@ class Cluster:
             )
         else:
             instance = self.preview(on, model=model, sharding=sharding, via=via)
-            response = self._http.post(
-                self.nodes[via].url + "/instance",
-                content=CreateInstanceParams(instance=instance).model_dump_json(),
-                headers={"content-type": "application/json"},
-                timeout=_CONTROL_TIMEOUT,
-            )
+            response = self._post_instance(instance, via)
         if response.status_code != 200:
             raise HarnessError(
                 f"launch refused ({response.status_code}): {response.text}"
@@ -774,6 +769,24 @@ class Cluster:
             lambda: next(iter(set(self._instances(via)) - before), None),
             timeout=timeout,
             what="the new instance to appear",
+        )
+
+    def create(self, instance: Instance, *, via: int = 0) -> None:
+        """Send one prepared instance (from `preview`) to be created, without waiting for it:
+        for scenarios that must time the launch exactly."""
+        response = self._post_instance(instance, via)
+        if response.status_code != 200:
+            raise HarnessError(
+                f"launch refused ({response.status_code}): {response.text}"
+            )
+        self.note(f"launch {instance.instance_id} via n{via}")
+
+    def _post_instance(self, instance: Instance, via: int) -> httpx.Response:
+        return self._http.post(
+            self.nodes[via].url + "/instance",
+            content=CreateInstanceParams(instance=instance).model_dump_json(),
+            headers={"content-type": "application/json"},
+            timeout=_CONTROL_TIMEOUT,
         )
 
     def preview(
