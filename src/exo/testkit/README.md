@@ -64,7 +64,11 @@ a `HarnessTimeoutError`): a node that dies on its own (`NodeExitedError`) or a c
 never forms (`ClusterStartError`) then fails the run instead of passing as the expected
 failure. Only signal processes the harness started: `kill`, `pause` and `quit` act on the
 node's own process group, recorded when it was spawned. Never `pkill` by pattern; other
-clusters on the machine run the same command line.
+clusters on the machine run the same command line. And never `killpg` an exo node with
+SIGKILL yourself: its group includes multiprocessing's resource tracker, which unlinks the
+node's named POSIX semaphores (about 40 per node with a runner) once the node is gone.
+Killed along with it, they leak until the machine restarts, and macOS allows 10,000 in all.
+`Cluster.kill` spares it (`test_killing_a_node_leaves_its_semaphores_to_the_resource_tracker`).
 
 ## The `Cluster` API (exo/testkit/cluster.py)
 

@@ -124,6 +124,27 @@ def test_every_node_serves_every_token(make_cluster: MakeCluster) -> None:
     assert cluster.violations() == []
 
 
+# --- the harness itself ----------------------------------------------------------------
+
+
+def test_killing_a_node_leaves_its_semaphores_to_the_resource_tracker(
+    make_cluster: MakeCluster,
+) -> None:
+    """The harness's kill -9 spares multiprocessing's resource tracker, which then unlinks
+    the node's named semaphores. Killed with the node, it would leak them until the
+    machine restarts; macOS allows 10,000, and a shared test machine ran out."""
+    cluster = make_cluster(2)
+    follower = _roles(cluster).followers[0]
+    cluster.launch(on=(follower,))
+    node = cluster.nodes[follower]
+    cluster.kill(follower)
+    cluster.wait_for(
+        lambda: "leaked semaphore objects to clean up" in node.output_path.read_text(),
+        timeout=15,
+        what="the node's resource tracker to unlink its semaphores",
+    )
+
+
 # --- a follower dies -------------------------------------------------------------------
 
 
