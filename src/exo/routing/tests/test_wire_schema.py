@@ -97,6 +97,37 @@ def test_writing_adds_the_new_versions_line_and_refuses_without_a_bump(
     assert wire_schema_module.main([]) == 0
 
 
+def test_keep_version_refuses_a_last_line_that_is_not_the_one_at_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Settling a ledger conflict with --keep-version would re-point a version that may
+    # already be on main for another schema
+    ledger, snapshot = tmp_path / "wire_versions.txt", tmp_path / "wire_schema.json"
+    monkeypatch.setattr(wire_schema_module, "LEDGER_PATH", ledger)
+    monkeypatch.setattr(wire_schema_module, "SNAPSHOT_PATH", snapshot)
+    monkeypatch.setattr(wire_schema_module, "WIRE_VERSION", 2)
+    merged = [LedgerEntry(1, "1" * 16), LedgerEntry(2, "a" * 16)]
+    ledger.write_text(dump_ledger(merged))
+    snapshot.write_text("{}")
+
+    # The last line came in with a merge: HEAD had another schema for version 2
+    monkeypatch.setattr(
+        wire_schema_module,
+        "ledger_at_head",
+        lambda: [LedgerEntry(1, "1" * 16), LedgerEntry(2, "b" * 16)],
+    )
+    assert wire_schema_module.main(["--write", "--keep-version"]) == 1
+    # Nor without git to ask
+    monkeypatch.setattr(wire_schema_module, "ledger_at_head", lambda: None)
+    assert wire_schema_module.main(["--write", "--keep-version"]) == 1
+    assert load_ledger(ledger) == merged
+
+    # The line committed at HEAD: the schema's rendering changed, not its bytes
+    monkeypatch.setattr(wire_schema_module, "ledger_at_head", lambda: list(merged))
+    assert wire_schema_module.main(["--write", "--keep-version"]) == 0
+    assert load_ledger(ledger)[-1] == LedgerEntry(2, schema_hash(wire_schema()))
+
+
 def test_every_topic_nodes_send_is_in_the_schema() -> None:
     assert set(network_topics()) == {
         topics.GLOBAL_EVENTS.topic,
