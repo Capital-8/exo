@@ -29,8 +29,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from exo.api.types import (
     CreateInstanceParams,
-    PlacementPreviewResponse,
     PlaceInstanceParams,
+    PlacementPreviewResponse,
 )
 from exo.download.hub import RepoFile
 from exo.download.store import Manifest, write_manifest
@@ -46,6 +46,7 @@ from exo.shared.types.worker.shards import Sharding
 from exo.testkit.netsim import ANNOUNCE_TO_ENV, NetSim
 from exo.testkit.network_table import (
     NETWORK_TABLE_ENV,
+    PROBE_OWN_PORT_ENV,
     Cut,
     CutMode,
     NetworkTable,
@@ -371,12 +372,16 @@ class Cluster:
         models: tuple[StubModel, ...] = (StubModel(),),
         stub: StubConfig | None = None,
         verbose: bool = False,
+        probe_own_port: bool = False,
     ) -> None:
         if not 1 <= size <= 15:
             raise ValueError("a test cluster has 1 to 15 nodes")
         self.root = root
         self.models = models
         self.verbose = verbose
+        # exo's own reachability probe asks every peer at the prober's own API port; the
+        # harness asks each at its real port, unless told to behave like exo
+        self.probe_own_port = probe_own_port
         self.namespace = f"exo-testkit-{uuid.uuid4().hex[:12]}"
         self.network = NetSim()
         self.network_table_path = root / "network.json"
@@ -408,8 +413,9 @@ class Cluster:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def start(self, timeout: float = 90.0) -> None:
-        """Start every node and wait until they form one cluster with one master."""
+    def start(self, timeout: float = 90.0, *, require_edges: bool = True) -> None:
+        """Start every node and wait until they form one cluster with one master (and, unless
+        told otherwise, until every pair has the topology edge placement needs)."""
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "dashboard").mkdir(exist_ok=True)
         self.network.start()
@@ -419,7 +425,7 @@ class Cluster:
         atexit.register(self.close)
         for node in self.nodes:
             self._spawn(node)
-        self.wait_for_cluster(timeout=timeout)
+        self.wait_for_cluster(timeout=timeout, require_edges=require_edges)
 
     def close(self) -> None:
         """Stop every node (gracefully, then by force) and the network."""
@@ -455,8 +461,7 @@ class Cluster:
         environment = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith(_INHERITED_ENV_PREFIXES)
-            or key in _PASSED_THROUGH_ENV
+            if not key.startswith(_INHERITED_ENV_PREFIXES) or key in _PASSED_THROUGH_ENV
         }
         environment.update(
             {
@@ -471,6 +476,7 @@ class Cluster:
                 RING_PROXY_ENV: str(self.network.ring_proxy_port),
                 STUB_CONFIG_ENV: str(node.stub_config_path),
                 NETWORK_TABLE_ENV: str(self.network_table_path),
+                PROBE_OWN_PORT_ENV: "1" if self.probe_own_port else "0",
             }
         )
         return environment
@@ -543,9 +549,8 @@ class Cluster:
 
     def note(self, message: str) -> None:
         line = f"{self.now():8.2f} {message}\n"
-        with contextlib.suppress(OSError):
-            with self.timeline_path.open("a") as timeline:
-                timeline.write(line)
+        with contextlib.suppress(OSError), self.timeline_path.open("a") as timeline:
+            timeline.write(line)
 
     # --- node faults ---------------------------------------------------------------------
 
@@ -593,12 +598,16 @@ class Cluster:
             node.process.wait(timeout)
         except subprocess.TimeoutExpired as error:
             self.kill(index)
-            raise HarnessError(f"{node.name} didn't exit within {timeout:.0f}s") from error
+            raise HarnessError(
+                f"{node.name} didn't exit within {timeout:.0f}s"
+            ) from error
         took = time.monotonic() - started
         # Anything of its group still alive (a runner) outlived the node: end it
         self._signal_group(node, signal.SIGKILL)
         node.status = "stopped"
-        self.note(f"{node.name} exited after {took:.1f}s, code {node.process.returncode}")
+        self.note(
+            f"{node.name} exited after {took:.1f}s, code {node.process.returncode}"
+        )
         return took
 
     def restart(self, index: int, *, new_identity: bool = True) -> None:
@@ -606,7 +615,9 @@ class Cluster:
         it comes back as a new device; `new_identity=False` keeps the old id."""
         node = self.nodes[index]
         if node.status != "stopped":
-            raise HarnessError(f"{node.name} is {node.status}; stop it before restarting")
+            raise HarnessError(
+                f"{node.name} is {node.status}; stop it before restarting"
+            )
         if new_identity:
             node.generation += 1
         self._spawn(node)
@@ -635,7 +646,9 @@ class Cluster:
 
     # --- API -----------------------------------------------------------------------------
 
-    def get(self, index: int, path: str, timeout: float = _HTTP_TIMEOUT) -> httpx.Response:
+    def get(
+        self, index: int, path: str, timeout: float = _HTTP_TIMEOUT
+    ) -> httpx.Response:
         return httpx.get(self.nodes[index].url + path, timeout=timeout)
 
     def state(self, index: int, timeout: float = _HTTP_TIMEOUT) -> State | None:
@@ -655,6 +668,7 @@ class Cluster:
         sharding: Sharding = Sharding.Pipeline,
         via: int = 0,
         min_nodes: int = 1,
+        timeout: float = 30,
     ) -> InstanceId:
         """Launch a model and return its instance id once the master has created it.
 
@@ -679,11 +693,13 @@ class Cluster:
                 timeout=_HTTP_TIMEOUT,
             )
         if response.status_code != 200:
-            raise HarnessError(f"launch refused ({response.status_code}): {response.text}")
+            raise HarnessError(
+                f"launch refused ({response.status_code}): {response.text}"
+            )
         self.note(f"launch {model} on {on or 'any'} via n{via}")
         return self.wait_for(
             lambda: next(iter(set(self._instances(via)) - before), None),
-            timeout=30,
+            timeout=timeout,
             what="the new instance to appear",
         )
 
@@ -698,7 +714,10 @@ class Cluster:
         wanted = {self.nodes[i].node_id for i in on}
         response = httpx.get(
             self.nodes[via].url + "/instance/previews",
-            params=[("model_id", model), *(("node_ids", node_id) for node_id in wanted)],
+            params=[
+                ("model_id", model),
+                *(("node_ids", node_id) for node_id in wanted),
+            ],
             timeout=_HTTP_TIMEOUT,
         )
         response.raise_for_status()
@@ -723,7 +742,9 @@ class Cluster:
         state = self.state(via)
         return {} if state is None else state.instances
 
-    def wait_ready(self, instance_id: InstanceId, via: int = 0, timeout: float = 60) -> None:
+    def wait_ready(
+        self, instance_id: InstanceId, via: int = 0, timeout: float = 60
+    ) -> None:
         """Wait until every runner of the instance is ready to serve, in `via`'s view."""
 
         def ready() -> bool:
@@ -736,7 +757,9 @@ class Cluster:
                 for runner in runners
             )
 
-        self.wait_for(ready, timeout=timeout, what=f"instance {instance_id} to be ready")
+        self.wait_for(
+            ready, timeout=timeout, what=f"instance {instance_id} to be ready"
+        )
         self.note(f"instance {instance_id} ready")
 
     def launch(
@@ -866,13 +889,14 @@ class Cluster:
     def wait_for[T](
         self, condition: Callable[[], T | None], *, timeout: float, what: str
     ) -> T:
-        """Poll until `condition` returns something other than None or False. Raises at once
-        if a node the harness believes is running has exited on its own."""
+        """Poll until `condition` returns a truthy value, and return it: None, False, 0, an
+        empty list or string all mean "not yet". Raises HarnessError after `timeout`, and at
+        once if a node the harness believes is running has exited on its own."""
         deadline = time.monotonic() + timeout
         while True:
             self.check_alive()
             value = condition()
-            if value is not None and value is not False:
+            if value:
                 return value
             if time.monotonic() > deadline:
                 raise HarnessError(f"timed out after {timeout:.0f}s waiting for {what}")
@@ -904,7 +928,9 @@ class Cluster:
             (node.index for node in self.running() if node.node_id == master_id), None
         )
 
-    def wait_for_master(self, timeout: float = 60, *, other_than: int | None = None) -> int:
+    def wait_for_master(
+        self, timeout: float = 60, *, other_than: int | None = None
+    ) -> int:
         """Wait until every running node follows one running master; return its index."""
 
         def agreed() -> int | None:
@@ -917,12 +943,14 @@ class Cluster:
         self.note(f"master is {self.nodes[master].name}")
         return master
 
-    def wait_for_cluster(self, timeout: float = 90) -> None:
+    def wait_for_cluster(
+        self, timeout: float = 90, *, require_edges: bool = True
+    ) -> None:
         """Wait until the running nodes form one cluster: one master, every node seeing
         exactly the running nodes, and every pair able to reach the other (topology edges,
         which placement needs)."""
         self.wait_for(
-            lambda: not self.violations(require_edges=True),
+            lambda: not self.violations(require_edges=require_edges),
             timeout=timeout,
             what="the running nodes to form one cluster",
         )
@@ -980,7 +1008,10 @@ class Cluster:
                 for a in running:
                     for b in running:
                         if a is not b and not any(
-                            True for _ in state.topology.get_all_connections_between(a.node_id, b.node_id)
+                            True
+                            for _ in state.topology.get_all_connections_between(
+                                a.node_id, b.node_id
+                            )
                         ):
                             problems.append(f"{name}: no edge {a.name}->{b.name}")
         instance_views = {

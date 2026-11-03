@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from exo.shared.types.common import NodeId
 
 NETWORK_TABLE_ENV = "EXO_TESTKIT_NETWORK"
+# Set to 1 for nodes to probe every peer at their own API port, as exo itself does
+PROBE_OWN_PORT_ENV = "EXO_TESTKIT_PROBE_OWN_PORT"
 
 # blackhole: packets vanish, as when a cable is pulled or Wi-Fi drops (connections hang until
 # a timeout notices). reset: connections are refused and torn down at once.

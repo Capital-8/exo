@@ -51,7 +51,7 @@ from exo.testkit.stub.directives import (
     request_key,
     token_text,
 )
-from exo.testkit.stub.ring import Ring, RingBroken
+from exo.testkit.stub.ring import Ring, RingError
 from exo.utils.channels import MpReceiver, MpSender
 from exo.worker.disaggregated.server import PrefillRequest
 from exo.worker.engines.base import Builder, Engine
@@ -77,12 +77,14 @@ def fail(kind: FaultKind, where: str, stall_seconds: float) -> None:
             _hang_forever()
         case "stall":
             print(
-                f"stub: stalling {stall_seconds:g}s {where}", file=sys.stderr, flush=True
+                f"stub: stalling {stall_seconds:g}s {where}",
+                file=sys.stderr,
+                flush=True,
             )
             time.sleep(stall_seconds)
 
 
-def ring_lost(error: RingBroken) -> NoReturn:
+def ring_lost(error: RingError) -> NoReturn:
     """What MLX's ring backend does when a neighbour goes: report it, then never progress."""
     for _ in range(3):
         print(
@@ -308,7 +310,7 @@ class StubEngine(Engine):
             return [payload]
         try:
             gathered = self.ring.all_gather(json.dumps(payload).encode())
-        except RingBroken as error:
+        except RingError as error:
             ring_lost(error)
         return [cast(dict[str, object], json.loads(item)) for item in gathered]
 
@@ -344,7 +346,7 @@ class StubBuilder(Builder):
             # Loading ends with the ranks waiting for each other, as sharded loading does
             try:
                 self.ring.barrier()
-            except RingBroken as error:
+            except RingError as error:
                 ring_lost(error)
 
     def build(self) -> Engine:

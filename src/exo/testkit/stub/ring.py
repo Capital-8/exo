@@ -11,18 +11,22 @@ here each rank listens on that port plus its rank.
 import errno
 import socket
 import struct
+import threading
 import time
 from dataclasses import dataclass
-from typing import final
+from typing import cast, final
 
 from exo.shared.types.common import NodeId
 from exo.shared.types.worker.instances import BoundInstance, MlxRingInstance
 
 _FRAME_HEADER = struct.Struct("!IH")
 _CONNECT_RETRY_SECONDS = 0.2
+# A runner answers a hello at once; one that doesn't is stale (stopped, or about to be)
+_HANDSHAKE_TIMEOUT = 2.0
+_READY = b"READY\n"
 
 
-class RingBroken(Exception):
+class RingError(Exception):
     """A receive or send to a neighbouring rank failed: the peer is gone or the link is cut."""
 
     def __init__(self, error_number: int, file_descriptor: int, detail: str) -> None:
@@ -67,24 +71,26 @@ class Ring:
         listener.bind(("0.0.0.0", instance.ephemeral_port + rank))
         listener.listen(4)
 
+        accepted: list[socket.socket] = []
+        acceptor = threading.Thread(
+            target=_accept,
+            args=(listener, f"{instance_id} {left}", accepted),
+            name="stub-ring-accept",
+            daemon=True,
+        )
+        acceptor.start()
         send_socket = _dial(
             host=hosts[right].ip,
             port=instance.ephemeral_port + right,
             proxy_port=proxy_port,
             source=bound_instance.bound_node_id,
             destination=nodes[right],
+            hello=f"{instance_id} {rank}",
         )
-        send_socket.sendall(f"{instance_id} {rank}\n".encode())
-
-        send_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        while True:
-            receive_socket, _ = listener.accept()
-            hello = _read_line(receive_socket)
-            if hello == f"{instance_id} {left}":
-                receive_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                break
-            # A connection from an earlier runner of this instance, or another instance
-            receive_socket.close()
+        acceptor.join()
+        (receive_socket,) = accepted
+        for each in (send_socket, receive_socket):
+            each.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         return cls(rank, size, send_socket, receive_socket, listener)
 
     def all_gather(self, payload: bytes) -> list[bytes]:
@@ -111,7 +117,7 @@ class Ring:
                 _FRAME_HEADER.pack(len(payload), origin_rank) + payload
             )
         except OSError as error:
-            raise RingBroken(
+            raise RingError(
                 error.errno or errno.EPIPE,
                 self._send_socket.fileno(),
                 f"send to rank {(self.rank + 1) % self.size} failed: {error}",
@@ -119,7 +125,7 @@ class Ring:
 
     def _receive(self) -> tuple[int, bytes]:
         header = self._receive_exactly(_FRAME_HEADER.size)
-        length, origin_rank = _FRAME_HEADER.unpack(header)
+        length, origin_rank = cast(tuple[int, int], _FRAME_HEADER.unpack(header))
         return origin_rank, self._receive_exactly(length)
 
     def _receive_exactly(self, length: int) -> bytes:
@@ -128,20 +134,41 @@ class Ring:
             try:
                 chunk = self._receive_socket.recv(length - len(received))
             except OSError as error:
-                raise RingBroken(
+                raise RingError(
                     error.errno or errno.ECONNRESET,
                     self._receive_socket.fileno(),
                     f"receive failed: {error}",
                 ) from error
             if not chunk:
                 # MLX reports a peer that went away as a failed receive
-                raise RingBroken(
+                raise RingError(
                     errno.ECONNRESET,
                     self._receive_socket.fileno(),
                     "the previous rank closed the connection",
                 )
             received += chunk
         return bytes(received)
+
+
+def _accept(
+    listener: socket.socket, expected_hello: str, accepted: list[socket.socket]
+) -> None:
+    """Accept the previous rank's connection, and say so, so that it knows it reached this
+    runner and not a stale one (an earlier runner of this instance, still alive, still
+    listening on the port)."""
+    while True:
+        connection = listener.accept()[0]
+        connection.settimeout(_HANDSHAKE_TIMEOUT)
+        try:
+            hello = _read_line(connection)
+            if hello == expected_hello:
+                connection.sendall(_READY)
+                connection.settimeout(None)
+                accepted.append(connection)
+                return
+        except OSError:
+            pass
+        connection.close()
 
 
 def _read_line(connection: socket.socket) -> str:
@@ -161,16 +188,28 @@ def _dial(
     proxy_port: int | None,
     source: NodeId,
     destination: NodeId,
+    hello: str,
 ) -> socket.socket:
+    """Connect to the next rank, retrying until that rank's runner answers the hello."""
     while True:
+        connection: socket.socket | None = None
         try:
             if proxy_port is None:
-                return socket.create_connection((host, port))
-            connection = socket.create_connection(("::1", proxy_port))
-            connection.sendall(f"RING {source} {destination} {host} {port}\n".encode())
-            if _read_line(connection) == "OK":
+                connection = socket.create_connection((host, port))
+            else:
+                connection = socket.create_connection(("::1", proxy_port))
+                connection.sendall(
+                    f"RING {source} {destination} {host} {port}\n".encode()
+                )
+                if _read_line(connection) != "OK":
+                    raise ConnectionError("the harness's proxy couldn't connect")
+            connection.settimeout(_HANDSHAKE_TIMEOUT)
+            connection.sendall(f"{hello}\n".encode())
+            if _read_line(connection).encode() + b"\n" == _READY:
+                connection.settimeout(None)
                 return connection
-            connection.close()
         except OSError:
             pass
+        if connection is not None:
+            connection.close()
         time.sleep(_CONNECT_RETRY_SECONDS)

@@ -28,9 +28,9 @@ def install_stub_engine() -> None:
     """Make `from exo.worker.engines.mlx.builder import MlxBuilder` give the stub builder, and
     `apply_mlx_patches` do nothing, in this process (neither may import MLX here)."""
     patches = types.ModuleType("exo.worker.engines.mlx.patches")
-    setattr(patches, "apply_mlx_patches", _no_patches)
+    patches.__dict__["apply_mlx_patches"] = _no_patches
     builder = types.ModuleType("exo.worker.engines.mlx.builder")
-    setattr(builder, "MlxBuilder", StubBuilder)
+    builder.__dict__["MlxBuilder"] = StubBuilder
     sys.modules[patches.__name__] = patches
     sys.modules[builder.__name__] = builder
 

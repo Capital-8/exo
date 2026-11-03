@@ -13,6 +13,7 @@ Everything else - discovery, zenoh, election, master, worker, API, downloads, ru
 production code, unchanged.
 """
 
+import os
 import sys
 
 import anyio
@@ -22,7 +23,7 @@ import exo.main
 import exo.utils.info_gatherer.net_profile as net_profile
 import exo.worker.runner.supervisor as supervisor
 from exo.shared.types.common import NodeId
-from exo.testkit.network_table import read_table
+from exo.testkit.network_table import PROBE_OWN_PORT_ENV, read_table
 from exo.testkit.stub.entrypoint import entrypoint as stub_entrypoint
 
 # A probe of a blackholed address fails only after every attempt times out: httpx's 5 s
@@ -43,7 +44,11 @@ def _probe_for(self_id: NodeId):
         if target_ip != "127.0.0.1":
             return
         table = read_table()
-        port = table.api_ports.get(expected_node_id)
+        port = (
+            api_port
+            if os.environ.get(PROBE_OWN_PORT_ENV) == "1"
+            else table.api_ports.get(expected_node_id)
+        )
         if port is None:
             return
         match table.cut_between(self_id, expected_node_id):

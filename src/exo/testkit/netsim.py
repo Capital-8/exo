@@ -33,7 +33,7 @@ from collections import deque
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from functools import partial
-from typing import final
+from typing import cast, final
 
 from exo.testkit.network_table import CutMode
 
@@ -66,7 +66,7 @@ class _Link:
         self.closed = True
         for writer in self.writers:
             if reset:
-                raw = writer.get_extra_info("socket")
+                raw = cast(object, writer.get_extra_info("socket"))
                 if isinstance(raw, socket.socket):
                     with contextlib.suppress(OSError):
                         raw.setsockopt(
@@ -182,7 +182,7 @@ class NetSim:
             lambda: _RelayProtocol(self, None, None), local_addr=("::1", 0)
         )
         self._relay = relay
-        self.relay_port = _port_of(relay.get_extra_info("sockname"))
+        self.relay_port = _port_of(cast(object, relay.get_extra_info("sockname")))
         ring = await asyncio.start_server(self._ring_connection, host="::1", port=0)
         self._servers.append(ring)
         self.ring_proxy_port = _server_port(ring)
@@ -366,7 +366,7 @@ async def _until_flowing(pair: _Pair, link: _Link) -> bool:
 def _no_delay(writer: asyncio.StreamWriter) -> None:
     """Forward small writes at once, as the endpoints themselves do: Nagle's algorithm on the
     proxy would add delays the real network doesn't have."""
-    raw = writer.get_extra_info("socket")
+    raw = cast(object, writer.get_extra_info("socket"))
     if isinstance(raw, socket.socket):
         with contextlib.suppress(OSError):
             raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -384,4 +384,4 @@ def _port_of(sockname: object) -> int:
 
 
 def _server_port(server: asyncio.Server) -> int:
-    return _port_of(server.sockets[0].getsockname())
+    return _port_of(cast(object, server.sockets[0].getsockname()))
