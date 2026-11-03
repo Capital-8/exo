@@ -34,12 +34,21 @@ def _free_port(kind: socket.SocketKind) -> int:
         return cast(int, sock.getsockname()[1])
 
 
-def _run_pair(first_version: int, second_version: int) -> list[dict[str, object]]:
+_MLX = "0.32.4"
+
+
+def _run_pair(
+    first_version: int,
+    second_version: int,
+    first_mlx: str | None = _MLX,
+    second_mlx: str | None = _MLX,
+) -> list[dict[str, object]]:
     """Run two nodes in one fresh namespace until the window ends; return their reports."""
     namespace = f"exo-wire-gate-test-{uuid.uuid4().hex[:12]}"
     discovery_port = _free_port(socket.SOCK_DGRAM)
 
-    def start(identity: str, version: int) -> subprocess.Popen[str]:
+    def start(identity: str, version: int, mlx: str | None) -> subprocess.Popen[str]:
+        mlx_argument = ["--mlx-release", mlx] if mlx is not None else []
         peer = subprocess.Popen(
             [
                 sys.executable,
@@ -57,6 +66,7 @@ def _run_pair(first_version: int, second_version: int) -> list[dict[str, object]
                 str(discovery_port),
                 "--seconds",
                 str(_WINDOW_SECONDS),
+                *mlx_argument,
             ],
             stdout=subprocess.PIPE,
             text=True,
@@ -65,7 +75,10 @@ def _run_pair(first_version: int, second_version: int) -> list[dict[str, object]
         assert peer.stdout.readline().strip() == "ready"
         return peer
 
-    peers = [start(_FIRST_ID, first_version), start(_SECOND_ID, second_version)]
+    peers = [
+        start(_FIRST_ID, first_version, first_mlx),
+        start(_SECOND_ID, second_version, second_mlx),
+    ]
     reports: list[dict[str, object]] = []
     for peer in peers:
         output, _ = peer.communicate(timeout=_WINDOW_SECONDS + 30)
@@ -84,14 +97,33 @@ def test_nodes_on_the_same_wire_version_connect() -> None:
         assert report["other_versions"] == [], reports
 
 
+def _heard(report: dict[str, object]) -> list[tuple[str, int | None]]:
+    """The reasons and wire versions of the devices a node saw that can't join."""
+    return [
+        (cast(str, reason), cast(int | None, version))
+        for _, reason, version in cast(list[list[object]], report["other_versions"])
+    ]
+
+
 @pytest.mark.slow
 def test_nodes_on_different_wire_versions_never_connect() -> None:
     newer = WIRE_VERSION + 1
     older_report, newer_report = _run_pair(WIRE_VERSION, newer)
     assert older_report["heard_after"] is None, (older_report, newer_report)
     assert newer_report["heard_after"] is None, (older_report, newer_report)
-    # Each says a device in its namespace runs another version, and which
-    older_heard = cast(list[list[object]], older_report["other_versions"])
-    newer_heard = cast(list[list[object]], newer_report["other_versions"])
-    assert older_heard and {version for _, version in older_heard} == {newer}
-    assert newer_heard and {version for _, version in newer_heard} == {WIRE_VERSION}
+    # Each says a device in its namespace runs another version, and which, once per device
+    assert _heard(older_report) == [("wire_version", newer)]
+    assert _heard(newer_report) == [("wire_version", WIRE_VERSION)]
+
+
+@pytest.mark.slow
+def test_nodes_on_different_mlx_releases_never_connect() -> None:
+    first, second = _run_pair(WIRE_VERSION, WIRE_VERSION, "0.32.4", "0.33.0")
+    assert first["heard_after"] is None and second["heard_after"] is None
+    assert _heard(first) == _heard(second) == [("mlx_release", None)]
+
+
+@pytest.mark.slow
+def test_a_node_without_mlx_connects_to_one_with_it() -> None:
+    first, second = _run_pair(WIRE_VERSION, WIRE_VERSION, "0.32.4", None)
+    assert first["heard_after"] is not None and second["heard_after"] is not None

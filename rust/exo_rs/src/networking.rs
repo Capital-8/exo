@@ -6,7 +6,7 @@ use crate::ext::{ByteArrayExt as _, FutureExt, PyErrExt as _};
 use crate::ext::{ResultExt as _, TokioMpscSenderExt as _};
 use futures_lite::{Stream, StreamExt as _};
 use networking::swarm::{FromSwarm, Swarm, ToSwarm, create_swarm};
-use networking::wire::OtherVersions;
+use networking::wire::{OtherVersions, PeerVersion};
 use networking::{Session, is_valid_zid};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -69,15 +69,22 @@ impl PyNetworkingHandle {
     // ---- Lifecycle management methods ----
 
     /// Starts this node's networking. It connects only to nodes with the same `namespace` and
-    /// the same `wire_version`.
+    /// `wire_version`, and the same `mlx_release` (or none on either side).
     #[staticmethod]
+    #[pyo3(signature = (identity, namespace, wire_version, mlx_release, listen_port, discovery_service_port))]
     pub fn new(
         identity: &str,
         namespace: &str,
         wire_version: u32,
+        mlx_release: Option<&str>,
         listen_port: u16,
         discovery_service_port: u16,
     ) -> PyResult<PyNetworkingHandle> {
+        let wire_version = u16::try_from(wire_version).map_err(|_| {
+            PyValueError::new_err(format!(
+                "wire version {wire_version} doesn't fit discovery's 16 bits"
+            ))
+        })?;
         // todo: zenoh self assigned peers
         if listen_port == 0 {
             todo!("cannot listen on port 0 yet");
@@ -98,6 +105,7 @@ impl PyNetworkingHandle {
                 identity,
                 namespace,
                 wire_version,
+                mlx_release,
                 from_client,
                 listen_port,
                 discovery_service_port,
@@ -112,14 +120,27 @@ impl PyNetworkingHandle {
         })
     }
 
-    /// The devices discovery hears in this namespace that run another wire version, so can't
-    /// join: `(address, wire_version)`, where a wire version of `None` is an exo from before
-    /// wire versions. A device is listed until its Hellos have stopped for 30 s.
-    pub fn devices_on_other_versions(&self) -> Vec<(String, Option<u32>)> {
+    /// The devices discovery hears in this namespace that can't join, one per device:
+    /// `(addresses, reason, wire_version)`. The reason is "older_exo" (from before wire
+    /// versions), "wire_version" (another wire version, given), or "mlx_release" (this wire
+    /// version on another MLX release). A device is listed until its Hellos have stopped for
+    /// 30 s.
+    pub fn devices_on_other_versions(&self) -> Vec<(Vec<String>, String, Option<u16>)> {
         self.other_versions
             .current(Instant::now())
             .into_iter()
-            .map(|(address, version)| (address.to_string(), version.number()))
+            .map(|device| {
+                let (reason, wire_version) = match device.version {
+                    PeerVersion::Unversioned => ("older_exo", None),
+                    PeerVersion::Wire(version) => ("wire_version", Some(version)),
+                    PeerVersion::Mlx => ("mlx_release", None),
+                };
+                (
+                    device.addresses.iter().map(ToString::to_string).collect(),
+                    reason.to_owned(),
+                    wire_version,
+                )
+            })
             .collect()
     }
 

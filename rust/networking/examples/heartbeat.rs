@@ -9,7 +9,7 @@ async fn main() -> Result<()> {
     info!("Opening session...");
     let cfg = networking::cfg(&format!("{:x}", rand::random::<u128>()), 52414)?;
     // Wire version 0: examples only meet each other
-    let session = networking::open(cfg, "exo", 0, 52414, 52413).await?;
+    let session = networking::open(cfg, "exo", 0, None, 52414, 52413).await?;
     let _tok = session
         .z
         .liveliness()

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from exo.api.main import API
-from exo.routing.wire import WIRE_VERSION, DeviceOnOtherVersion
+from exo.routing.wire import WIRE_VERSION, DeviceOnOtherVersion, mlx_release
 
 
 def _client(devices: list[DeviceOnOtherVersion]) -> TestClient:
@@ -13,24 +13,43 @@ def _client(devices: list[DeviceOnOtherVersion]) -> TestClient:
     return TestClient(api.app)
 
 
-def test_lists_the_devices_that_run_another_version() -> None:
+def test_lists_each_device_that_can_not_join_once() -> None:
     response = _client(
         [
-            DeviceOnOtherVersion(address="fe80::1%en0", wire_version=WIRE_VERSION + 1),
-            DeviceOnOtherVersion(address="fe80::2%en0", wire_version=None),
+            DeviceOnOtherVersion(
+                addresses=["fe80::1", "fe80::2"],
+                reason="wire_version",
+                wire_version=WIRE_VERSION + 1,
+            ),
+            DeviceOnOtherVersion(
+                addresses=["fe80::3"], reason="mlx_release", wire_version=None
+            ),
+            DeviceOnOtherVersion(
+                addresses=["fe80::4"], reason="older_exo", wire_version=None
+            ),
         ]
     ).get("/v1/devices-on-other-versions")
     assert response.status_code == 200
     assert response.json() == {
         "wireVersion": WIRE_VERSION,
+        "mlxRelease": mlx_release(),
         "devices": [
-            {"address": "fe80::1%en0", "wireVersion": WIRE_VERSION + 1},
-            # an exo from before wire versions
-            {"address": "fe80::2%en0", "wireVersion": None},
+            # One device, heard on two of its interfaces
+            {
+                "addresses": ["fe80::1", "fe80::2"],
+                "reason": "wire_version",
+                "wireVersion": WIRE_VERSION + 1,
+            },
+            {"addresses": ["fe80::3"], "reason": "mlx_release", "wireVersion": None},
+            {"addresses": ["fe80::4"], "reason": "older_exo", "wireVersion": None},
         ],
     }
 
 
-def test_is_empty_when_every_device_runs_this_version() -> None:
+def test_is_empty_when_every_device_can_join() -> None:
     response = _client([]).get("/v1/devices-on-other-versions")
-    assert response.json() == {"wireVersion": WIRE_VERSION, "devices": []}
+    assert response.json() == {
+        "wireVersion": WIRE_VERSION,
+        "mlxRelease": mlx_release(),
+        "devices": [],
+    }

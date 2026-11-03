@@ -53,17 +53,18 @@ pub fn cfg(identity: &str, listen_port: u16) -> Result<zenoh::Config> {
     Ok(cfg)
 }
 
-/// Opens this node's session. It connects only to nodes with the same `namespace` and the same
-/// `wire_version` (exo's WIRE_VERSION, see `wire`).
+/// Opens this node's session. It connects only to nodes with the same `namespace` and
+/// `wire_version` (exo's WIRE_VERSION), and the same `mlx_release` or none: see `wire`.
 pub async fn open(
     cfg: zenoh::Config,
     namespace: &str,
-    wire_version: u32,
+    wire_version: u16,
+    mlx_release: Option<&str>,
     listen_port: u16,
     discovery_service_port: u16,
 ) -> Result<Session> {
     assert!(listen_port != 0, "must used defined listen port");
-    let cluster = ClusterKey::new(namespace, wire_version);
+    let cluster = ClusterKey::new(namespace, wire_version, mlx_release);
     let other_versions = OtherVersions::default();
     let mut plugins = PluginsManager::static_plugins_only();
     plugins.declare_static_plugin::<StoragesPlugin, _>("storage_manager", true);

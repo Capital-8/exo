@@ -27,7 +27,7 @@ from exo.download.transfer import DownloadSettings
 from exo.master.main import Master
 from exo.routing.event_router import EventRouter
 from exo.routing.router import Router, get_node_zid
-from exo.routing.wire import WIRE_VERSION
+from exo.routing.wire import WIRE_VERSION, mlx_release
 from exo.shared.constants import (
     EXO_DEFAULT_MODELS_DIR,
     EXO_EVENT_LOG_DIR,
@@ -421,8 +421,8 @@ def main_inner(args: "Args"):
             "EXO_LIBP2P_NAMESPACE is deprecated - use EXO_ZENOH_NAMESPACE instead"
         )
     logger.info(
-        f"Discovery namespace: {args.namespace} (wire version {WIRE_VERSION}: only nodes "
-        "with both the same connect)"
+        f"Discovery namespace: {args.namespace} (wire version {WIRE_VERSION}, MLX "
+        f"{mlx_release() or 'none'}: only nodes with the same connect)"
     )
 
     if args.offline:

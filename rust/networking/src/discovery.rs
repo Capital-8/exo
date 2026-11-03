@@ -16,7 +16,7 @@ use tokio::{
 };
 use zenoh::config::ZenohId;
 
-use crate::wire::{ClusterKey, NamespaceHash, OtherVersions};
+use crate::wire::{ClusterKey, OtherVersions, Peer, PeerVersion};
 
 const GROUP: Ipv6Addr = Ipv6Addr::new(0xff12, 0, 0, 0, 0, 0, 0xe0a1, 0xde89);
 const MAGIC: [u8; 3] = *b"EXO";
@@ -219,21 +219,25 @@ impl Discovery {
                     trace!("dropped: local hello nonce");
                     return Ok(None);
                 }
-                if hello.namespace != self.cluster.hash() {
-                    if self.heard_another_version(hello.namespace, addr) {
+                match self.cluster.classify(&hello.namespace) {
+                    Peer::Compatible => {}
+                    Peer::OtherVersion(version) => {
+                        self.heard_another_version(version, hello.nonce, addr);
                         return Ok(None);
                     }
-                    trace!("dropped: different namespace");
-                    if self.other_cluster_notice.lock().due(Instant::now()) {
-                        info!(
-                            "found another exo at {} that can't join this cluster: it runs a \
+                    Peer::OtherCluster => {
+                        trace!("dropped: different namespace");
+                        if self.other_cluster_notice.lock().due(Instant::now()) {
+                            info!(
+                                "found another exo at {} that can't join this cluster: it runs a \
                              different version of exo, or was started with a different \
                              namespace. Nodes connect only when both match, so update every \
                              device to the same version of exo.",
-                            addr.ip()
-                        );
+                                addr.ip()
+                            );
+                        }
+                        return Ok(None);
                     }
-                    return Ok(None);
                 }
 
                 // reply
@@ -292,23 +296,20 @@ impl Discovery {
 
     /// Notes a Hello from our namespace on another wire version, and says so (rate-limited).
     /// False for a Hello from another namespace.
-    fn heard_another_version(&self, hash: NamespaceHash, addr: SocketAddr) -> bool {
-        let Some(version) = self.cluster.other_version(&hash) else {
-            return false;
-        };
+    /// Notes a Hello from our cluster that can't join, and says so (rate-limited).
+    fn heard_another_version(&self, version: PeerVersion, hello: [u8; 8], addr: SocketAddr) {
         trace!("dropped: {version}");
         let now = Instant::now();
-        self.other_versions.heard(addr.ip(), version, now);
+        self.other_versions.heard(addr.ip(), version, hello, now);
         if self.other_version_notice.lock().due(now) {
             warn!(
-                "a device at {} runs another version of exo ({version}; this one runs wire \
-                 version {}), so it can't join this cluster. Devices connect only when they \
-                 run the same version: update every device to the same version of exo.",
+                "a device at {} runs another version of exo ({version}; this one runs {}), \
+                 so it can't join this cluster. Devices connect only when they run the same \
+                 version: update every device to the same version of exo.",
                 addr.ip(),
-                self.cluster.wire_version()
+                self.cluster.describe()
             );
         }
-        true
     }
 
     async fn announce(&self) -> io::Result<()> {

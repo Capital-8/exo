@@ -226,7 +226,8 @@ async fn on_message(
 pub async fn create_swarm(
     identity: &str,
     namespace: &str,
-    wire_version: u32,
+    wire_version: u16,
+    mlx_release: Option<&str>,
     from_client: mpsc::Receiver<ToSwarm>,
     listen_port: u16,
     discovery_service_port: u16,
@@ -236,6 +237,7 @@ pub async fn create_swarm(
         cfg,
         namespace,
         wire_version,
+        mlx_release,
         listen_port,
         discovery_service_port,
     )

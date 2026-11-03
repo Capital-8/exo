@@ -3,7 +3,7 @@ from copy import copy
 from itertools import count
 from math import inf
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from anyio import (
     BrokenResourceError,
@@ -25,7 +25,7 @@ from exo.utils.task_group import TaskGroup
 
 from .connection_message import ConnectionMessage
 from .topics import CONNECTION_MESSAGES, PublishPolicy, TypedTopic
-from .wire import WIRE_VERSION, DeviceOnOtherVersion
+from .wire import WIRE_VERSION, DeviceOnOtherVersion, mlx_release
 
 
 # A significant current limitation of the TopicRouter is that it is not capable
@@ -120,11 +120,18 @@ class Router:
         listen_port: int,
         discovery_service_port: int,
         wire_version: int = WIRE_VERSION,
+        mlx: str | None = mlx_release(),
     ) -> "Router":
-        """Networking that connects only to nodes with the same namespace and wire version."""
+        """Networking that connects only to nodes with the same namespace and wire version,
+        and the same MLX release (or none on either side)."""
         return cls(
             handle=NetworkingHandle.new(
-                identity, namespace, wire_version, listen_port, discovery_service_port
+                identity,
+                namespace,
+                wire_version,
+                mlx,
+                listen_port,
+                discovery_service_port,
             )
         )
 
@@ -151,8 +158,14 @@ class Router:
     def devices_on_other_versions(self) -> list[DeviceOnOtherVersion]:
         """Devices on the network in this namespace that can't join: they run another wire version."""
         return [
-            DeviceOnOtherVersion(address=address, wire_version=wire_version)
-            for address, wire_version in self._net.devices_on_other_versions()
+            DeviceOnOtherVersion(
+                addresses=addresses,
+                reason=cast(
+                    Literal["older_exo", "wire_version", "mlx_release"], reason
+                ),
+                wire_version=wire_version,
+            )
+            for addresses, reason, wire_version in self._net.devices_on_other_versions()
         ]
 
     def sender[T: FrozenModel](self, topic: TypedTopic[T]) -> Sender[T]:
