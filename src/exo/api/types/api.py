@@ -464,7 +464,7 @@ class DevicesOnOtherVersionsResponse(FrozenModel):
 
     # This node's
     wire_version: int
-    mlx_release: str | None
+    build_id: str
     devices: list[DeviceOnOtherVersion]
 
 

@@ -1,8 +1,11 @@
 """One node for test_wire_gate.py, in its own process: real discovery and zenoh, no exo.
 
-It joins ``--namespace`` with ``--wire-version`` and ``--mlx-release``, publishes on a test topic for ``--seconds``,
-and prints one JSON line: how long until it heard another node on the topic (null if it
-never did), and the devices on other wire versions its discovery heard.
+It joins a namespace with ``--wire-version`` and a build, publishes on a test topic for
+``--seconds``, and prints one JSON line: how long until it heard another node on the topic
+(null if it never did), and the devices on other versions its discovery heard.
+
+The build is ``--build-id``, or with ``--package-version`` that of a source build of that
+package version of exo; ``--namespace default`` takes exo's default namespace.
 """
 
 import argparse
@@ -21,7 +24,8 @@ async def run(
     identity: str,
     namespace: str,
     wire_version: int,
-    mlx: str | None,
+    build: str,
+    pre_gate_namespace: str | None,
     zenoh_port: int,
     discovery_port: int,
     seconds: float,
@@ -30,7 +34,8 @@ async def run(
         identity,
         namespace,
         wire_version,
-        mlx,
+        build,
+        pre_gate_namespace,
         zenoh_port,
         discovery_port,
     )
@@ -70,32 +75,42 @@ def main() -> None:
     parser.add_argument(
         "--namespace", required=True, help="or 'default': exo's default"
     )
-    parser.add_argument(
-        "--package-version",
-        help="the package version to give exo before asking it for its default namespace",
-    )
     parser.add_argument("--wire-version", type=int, required=True)
+    parser.add_argument("--build-id", help="the build it claims")
     parser.add_argument(
-        "--mlx-release", help="the MLX release it claims; none if left out"
+        "--package-version", help="be a source build of this package version of exo"
     )
     parser.add_argument("--zenoh-port", type=int, required=True)
     parser.add_argument("--discovery-port", type=int, required=True)
     parser.add_argument("--seconds", type=float, required=True)
     args = parser.parse_args()
+
+    import exo.main
+    import exo.routing.router
+    import exo.routing.wire
+
+    package_version = cast(str | None, args.package_version)
+    if package_version is not None:
+        # Each module reads the package version it imported
+        exo.main.__version__ = package_version
+        exo.routing.wire.__version__ = package_version
+        exo.routing.router.__version__ = package_version
     namespace = cast(str, args.namespace)
     if namespace == "default":
-        import exo.main
-
-        package_version = cast(str | None, args.package_version)
-        if package_version is not None:
-            exo.main.__version__ = package_version
         namespace = exo.main.default_namespace({})
+    build = cast(str | None, args.build_id) or exo.routing.wire.build_id({})
+    pre_gate_namespace = (
+        exo.routing.router.__version__
+        if namespace == exo.routing.wire.DEFAULT_CLUSTER_NAME
+        else None
+    )
     asyncio.run(
         run(
             cast(str, args.identity),
             namespace,
             cast(int, args.wire_version),
-            cast(str | None, args.mlx_release),
+            build,
+            pre_gate_namespace,
             cast(int, args.zenoh_port),
             cast(int, args.discovery_port),
             cast(float, args.seconds),

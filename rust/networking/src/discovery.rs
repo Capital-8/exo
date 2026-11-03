@@ -302,10 +302,14 @@ impl Discovery {
         let now = Instant::now();
         self.other_versions.heard(addr.ip(), version, hello, now);
         if self.other_version_notice.lock().due(now) {
+            let what = match version {
+                PeerVersion::Build => "another build of exo",
+                PeerVersion::Wire(_) | PeerVersion::Unversioned => "another version of exo",
+            };
             warn!(
-                "a device at {} runs another version of exo ({version}; this one runs {}), \
-                 so it can't join this cluster. Devices connect only when they run the same \
-                 version: update every device to the same version of exo.",
+                "a device at {} runs {what} ({version}; this one runs {}), so it can't join \
+                 this cluster. Devices connect only when they run the same build: update both \
+                 devices to the same version of exo.",
                 addr.ip(),
                 self.cluster.describe()
             );

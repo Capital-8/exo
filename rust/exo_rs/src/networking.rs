@@ -68,15 +68,17 @@ impl PyNetworkingHandle {
 
     // ---- Lifecycle management methods ----
 
-    /// Starts this node's networking. It connects only to nodes with the same `namespace` and
-    /// `wire_version`, and the same `mlx_release` (or none on either side).
+    /// Starts this node's networking. It connects only to nodes with the same `namespace`,
+    /// `wire_version` and `build_id`. Exos from before wire versions are recognised under
+    /// `namespace`, and under `pre_gate_namespace` if given.
     #[staticmethod]
-    #[pyo3(signature = (identity, namespace, wire_version, mlx_release, listen_port, discovery_service_port))]
+    #[pyo3(signature = (identity, namespace, wire_version, build_id, pre_gate_namespace, listen_port, discovery_service_port))]
     pub fn new(
         identity: &str,
         namespace: &str,
         wire_version: u32,
-        mlx_release: Option<&str>,
+        build_id: &str,
+        pre_gate_namespace: Option<&str>,
         listen_port: u16,
         discovery_service_port: u16,
     ) -> PyResult<PyNetworkingHandle> {
@@ -105,7 +107,8 @@ impl PyNetworkingHandle {
                 identity,
                 namespace,
                 wire_version,
-                mlx_release,
+                build_id,
+                pre_gate_namespace,
                 from_client,
                 listen_port,
                 discovery_service_port,
@@ -122,9 +125,8 @@ impl PyNetworkingHandle {
 
     /// The devices discovery hears in this namespace that can't join, one per device:
     /// `(addresses, reason, wire_version)`. The reason is "older_exo" (from before wire
-    /// versions), "wire_version" (another wire version, given), or "mlx_release" (this wire
-    /// version on another MLX release). A device is listed until its Hellos have stopped for
-    /// 30 s.
+    /// versions), "wire_version" (another wire version, given), or "build" (this wire version
+    /// but another build). A device is listed until its Hellos have stopped for 30 s.
     pub fn devices_on_other_versions(&self) -> Vec<(Vec<String>, String, Option<u16>)> {
         self.other_versions
             .current(Instant::now())
@@ -133,7 +135,7 @@ impl PyNetworkingHandle {
                 let (reason, wire_version) = match device.version {
                     PeerVersion::Unversioned => ("older_exo", None),
                     PeerVersion::Wire(version) => ("wire_version", Some(version)),
-                    PeerVersion::Mlx => ("mlx_release", None),
+                    PeerVersion::Build => ("build", None),
                 };
                 (
                     device.addresses.iter().map(ToString::to_string).collect(),

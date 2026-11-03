@@ -1,18 +1,18 @@
-//! Which nodes may connect: the same cluster name, the same wire version, and compatible MLX.
+//! Which nodes may connect: the same cluster name, the same wire version and the same build.
 //!
 //! The wire version is exo's `WIRE_VERSION` (src/exo/routing/wire.py): nodes whose message
-//! schemas differ can't read each other. Nodes on different MLX releases can hang part way
-//! through a model, in the collectives between its ranks. Such nodes must never connect.
+//! schemas differ can't read each other. Nodes of different builds can disagree inside a model,
+//! between its ranks (MLX, mlx-lm and exo's sharding code all change between builds), and hang
+//! part way through it or give wrong tokens. Such nodes must never connect.
 //!
-//! A discovery Hello carries 8 bytes that say which cluster its sender is in and what it can
-//! talk:
-//! - bytes 0..4: the first 4 bytes of blake3 of the cluster name (the namespace);
-//! - bytes 4..6: the wire version, little-endian;
-//! - bytes 6..8: a tag of the MLX release it runs, or 0 when it has no MLX.
+//! A discovery Hello carries 8 bytes that say which cluster its sender is in and what it runs:
+//! - bytes 0..3: the first 3 bytes of blake3 of the cluster name (the namespace);
+//! - bytes 3..5: the wire version, little-endian;
+//! - bytes 5..8: the first 3 bytes of blake3 of the build id.
 //!
-//! Nodes connect only when the cluster and the wire version are the same, and the MLX tags are
-//! the same or either is 0: a node without MLX never takes part in the collectives. Before
-//! wire versions, exo sent the first 8 bytes of blake3 of the namespace, which is told apart.
+//! Nodes connect only when all three are equal. Two different cluster names, or two different
+//! builds, share 3 bytes with probability 2^-24 (1 in 16.8 million) per pair. Before wire
+//! versions, exo sent the first 8 bytes of blake3 of the namespace, which is told apart.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -39,9 +39,6 @@ pub const OTHER_VERSION_FORGET_AFTER: Duration = Duration::from_secs(30);
 /// the list without bound.
 pub const MAX_OTHER_VERSION_ADDRESSES: usize = 64;
 
-/// The MLX tag of a node without MLX.
-const NO_MLX: u16 = 0;
-
 /// Why a device in our cluster can't join it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PeerVersion {
@@ -49,8 +46,8 @@ pub enum PeerVersion {
     Unversioned,
     /// Another wire version.
     Wire(u16),
-    /// Our wire version, on another MLX release.
-    Mlx,
+    /// Our wire version, but another build.
+    Build,
 }
 
 impl fmt::Display for PeerVersion {
@@ -58,7 +55,7 @@ impl fmt::Display for PeerVersion {
         match self {
             Self::Unversioned => write!(f, "an exo from before wire versions"),
             Self::Wire(version) => write!(f, "wire version {version}"),
-            Self::Mlx => write!(f, "another MLX release"),
+            Self::Build => write!(f, "the same wire version but another build"),
         }
     }
 }
@@ -66,7 +63,7 @@ impl fmt::Display for PeerVersion {
 /// What a Hello says about its sender, compared with us.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Peer {
-    /// Our cluster, and we can talk: connect.
+    /// Our cluster, our wire version and our build: connect.
     Compatible,
     /// Our cluster, but it can't join.
     OtherVersion(PeerVersion),
@@ -74,42 +71,43 @@ pub enum Peer {
     OtherCluster,
 }
 
-/// The tag of an MLX release in a Hello: never 0, which means no MLX.
-pub fn mlx_tag(release: Option<&str>) -> u16 {
-    match release {
-        None => NO_MLX,
-        Some(release) => {
-            let hash = blake3::hash(release.as_bytes());
-            match u16::from_le_bytes([hash.as_bytes()[0], hash.as_bytes()[1]]) {
-                NO_MLX => 1,
-                tag => tag,
-            }
-        }
-    }
+fn prefix<const N: usize>(text: &str) -> [u8; N] {
+    blake3::hash(text.as_bytes()).as_bytes()[..N]
+        .try_into()
+        .expect("N is at most 32")
 }
 
-/// This node's cluster and what it can talk, as its Hellos say.
+/// This node's cluster and build, as its Hellos say them.
 pub struct ClusterKey {
     hash: NamespaceHash,
-    unversioned: NamespaceHash,
+    /// What exos from before wire versions announce in our cluster
+    unversioned: Vec<NamespaceHash>,
     wire_version: u16,
-    mlx_release: Option<String>,
+    build_id: String,
 }
 
 impl ClusterKey {
-    pub fn new(namespace: &str, wire_version: u16, mlx_release: Option<&str>) -> Self {
-        let unversioned: NamespaceHash = blake3::hash(namespace.as_bytes()).as_bytes()[..8]
-            .try_into()
-            .expect("8 is equal to 8");
+    /// `pre_gate_namespace`: another name that exos from before wire versions used for this
+    /// cluster (their package version, on the default name), to recognise them by.
+    pub fn new(
+        namespace: &str,
+        wire_version: u16,
+        build_id: &str,
+        pre_gate_namespace: Option<&str>,
+    ) -> Self {
         let mut hash = [0; 8];
-        hash[..4].copy_from_slice(&unversioned[..4]);
-        hash[4..6].copy_from_slice(&wire_version.to_le_bytes());
-        hash[6..].copy_from_slice(&mlx_tag(mlx_release).to_le_bytes());
+        hash[..3].copy_from_slice(&prefix::<3>(namespace));
+        hash[3..5].copy_from_slice(&wire_version.to_le_bytes());
+        hash[5..].copy_from_slice(&prefix::<3>(build_id));
+        let unversioned = std::iter::once(namespace)
+            .chain(pre_gate_namespace)
+            .map(prefix::<8>)
+            .collect();
         Self {
             hash,
             unversioned,
             wire_version,
-            mlx_release: mlx_release.map(str::to_owned),
+            build_id: build_id.to_owned(),
         }
     }
 
@@ -118,31 +116,29 @@ impl ClusterKey {
         self.hash
     }
 
-    /// This node's wire version and MLX release, as a log line says them.
+    /// This node's wire version and build, as a log line says them.
     pub fn describe(&self) -> String {
-        match &self.mlx_release {
-            Some(release) => format!("wire version {} with MLX {release}", self.wire_version),
-            None => format!("wire version {} without MLX", self.wire_version),
-        }
+        format!(
+            "wire version {}, build {}",
+            self.wire_version, self.build_id
+        )
     }
 
     pub fn classify(&self, theirs: &NamespaceHash) -> Peer {
-        if *theirs == self.unversioned {
+        if self.unversioned.contains(theirs) {
             return Peer::OtherVersion(PeerVersion::Unversioned);
         }
-        if theirs[..4] != self.hash[..4] {
+        if theirs[..3] != self.hash[..3] {
             return Peer::OtherCluster;
         }
-        let wire_version = u16::from_le_bytes([theirs[4], theirs[5]]);
+        let wire_version = u16::from_le_bytes([theirs[3], theirs[4]]);
         if wire_version != self.wire_version {
             return Peer::OtherVersion(PeerVersion::Wire(wire_version));
         }
-        let ours = u16::from_le_bytes([self.hash[6], self.hash[7]]);
-        let mlx = u16::from_le_bytes([theirs[6], theirs[7]]);
-        if mlx == ours || mlx == NO_MLX || ours == NO_MLX {
+        if theirs[5..] == self.hash[5..] {
             Peer::Compatible
         } else {
-            Peer::OtherVersion(PeerVersion::Mlx)
+            Peer::OtherVersion(PeerVersion::Build)
         }
     }
 }
@@ -231,77 +227,84 @@ fn forget_old(heard: &mut HashMap<IpAddr, Heard>, now: Instant) {
 mod tests {
     use super::*;
 
-    fn key(namespace: &str, wire_version: u16, mlx: Option<&str>) -> ClusterKey {
-        ClusterKey::new(namespace, wire_version, mlx)
+    const BUILD: &str = "exo 0.3.70, mlx 0.32.4.dev20261030+36969c09, mlx-lm 0.32.3.dev16";
+
+    fn key(namespace: &str, wire_version: u16, build: &str) -> ClusterKey {
+        ClusterKey::new(namespace, wire_version, build, None)
     }
 
     #[test]
-    fn the_same_cluster_wire_version_and_mlx_connect() {
-        let ours = key("0.3.70", 1, Some("0.32.4"));
+    fn the_same_cluster_wire_version_and_build_connect() {
+        let ours = key("exo", 1, BUILD);
         assert_eq!(
-            ours.classify(&key("0.3.70", 1, Some("0.32.4")).hash()),
+            ours.classify(&key("exo", 1, BUILD).hash()),
             Peer::Compatible
         );
     }
 
     #[test]
     fn another_wire_version_is_told_apart_from_another_cluster() {
-        let ours = key("studio", 5, Some("0.32.4"));
+        let ours = key("studio", 5, BUILD);
         assert_eq!(
-            ours.classify(&key("studio", 4, Some("0.32.4")).hash()),
+            ours.classify(&key("studio", 4, BUILD).hash()),
             Peer::OtherVersion(PeerVersion::Wire(4))
         );
         assert_eq!(
-            ours.classify(&key("studio", 6, None).hash()),
+            ours.classify(&key("studio", 6, "another build").hash()),
             Peer::OtherVersion(PeerVersion::Wire(6))
         );
         assert_eq!(
-            ours.classify(&key("office", 5, Some("0.32.4")).hash()),
+            ours.classify(&key("office", 5, BUILD).hash()),
             Peer::OtherCluster
         );
         assert_eq!(
-            ours.classify(&key("office", 4, None).hash()),
+            ours.classify(&key("office", 4, "another build").hash()),
             Peer::OtherCluster
         );
     }
 
     #[test]
-    fn another_mlx_release_does_not_connect() {
-        let ours = key("studio", 1, Some("0.32.4"));
-        assert_eq!(
-            ours.classify(&key("studio", 1, Some("0.33.0")).hash()),
-            Peer::OtherVersion(PeerVersion::Mlx)
-        );
-    }
-
-    #[test]
-    fn a_node_without_mlx_connects_to_any_mlx() {
-        // It never takes part in the collectives between a model's ranks
-        let with_mlx = key("studio", 1, Some("0.32.4"));
-        let without = key("studio", 1, None);
-        assert_eq!(with_mlx.classify(&without.hash()), Peer::Compatible);
-        assert_eq!(without.classify(&with_mlx.hash()), Peer::Compatible);
+    fn another_build_does_not_connect() {
+        let ours = key("exo", 1, BUILD);
+        for other in [
+            "exo 0.3.70, mlx 0.32.4.dev20261101+0123abcd, mlx-lm 0.32.3.dev16",
+            "exo 0.3.70, mlx 0.32.4, mlx-lm 0.32.3.dev16",
+            "exo 0.3.70, mlx none, mlx-lm none",
+            "1.0.72 (4f1c2a9)",
+        ] {
+            assert_eq!(
+                ours.classify(&key("exo", 1, other).hash()),
+                Peer::OtherVersion(PeerVersion::Build),
+                "{other}"
+            );
+        }
     }
 
     #[test]
     fn exos_from_before_wire_versions_are_recognised() {
         // What every exo announced until wire versions: the first 8 bytes of blake3
-        let unversioned: NamespaceHash =
-            blake3::hash(b"0.3.70").as_bytes()[..8].try_into().unwrap();
-        let ours = key("0.3.70", 1, Some("0.32.4"));
+        let unversioned = |namespace: &str| prefix::<8>(namespace);
+        // On a name both use
+        let ours = key("studio", 1, BUILD);
         assert_eq!(
-            ours.classify(&unversioned),
+            ours.classify(&unversioned("studio")),
             Peer::OtherVersion(PeerVersion::Unversioned)
         );
-        assert_ne!(ours.hash(), unversioned);
-    }
-
-    #[test]
-    fn an_mlx_tag_is_never_the_tag_of_no_mlx() {
-        assert_eq!(mlx_tag(None), NO_MLX);
-        for release in ["0.32.4", "0.33.0", "0.30.1", ""] {
-            assert_ne!(mlx_tag(Some(release)), NO_MLX, "{release}");
-        }
+        assert_ne!(ours.hash(), unversioned("studio"));
+        // On the default name, whose old form was the package version
+        let on_default = ClusterKey::new("exo", 1, BUILD, Some("0.3.70"));
+        assert_eq!(
+            on_default.classify(&unversioned("0.3.70")),
+            Peer::OtherVersion(PeerVersion::Unversioned)
+        );
+        assert_eq!(
+            on_default.classify(&unversioned("0.3.69")),
+            Peer::OtherCluster
+        );
+        assert_eq!(
+            key("exo", 1, BUILD).classify(&unversioned("0.3.70")),
+            Peer::OtherCluster
+        );
     }
 
     fn address(last: u16) -> IpAddr {
@@ -335,7 +338,7 @@ mod tests {
         for last in 1..=3 {
             heard.heard(address(last), PeerVersion::Wire(2), [7; 8], now);
         }
-        heard.heard(address(9), PeerVersion::Mlx, [8; 8], now);
+        heard.heard(address(9), PeerVersion::Build, [8; 8], now);
         // Its next Hello has reached only one address so far: still one device
         heard.heard(address(2), PeerVersion::Wire(2), [9; 8], now);
         assert_eq!(
@@ -347,7 +350,7 @@ mod tests {
                 },
                 DeviceOnOtherVersion {
                     addresses: vec![address(9)],
-                    version: PeerVersion::Mlx
+                    version: PeerVersion::Build
                 },
             ]
         );
@@ -373,7 +376,7 @@ mod tests {
         assert!(!heard.0.lock().contains_key(&address(0)));
         // Old entries go when anything new is heard, without anyone reading the list
         let much_later = start + OTHER_VERSION_FORGET_AFTER + Duration::from_secs(60);
-        heard.heard(address(500), PeerVersion::Mlx, [1; 8], much_later);
+        heard.heard(address(500), PeerVersion::Build, [1; 8], much_later);
         assert_eq!(heard.0.lock().len(), 1);
     }
 }

@@ -34,18 +34,18 @@ class FromSwarm:
 @typing.final
 class NetworkingHandle:
     @staticmethod
-    def new(identity: builtins.str, namespace: builtins.str, wire_version: builtins.int, mlx_release: typing.Optional[builtins.str], listen_port: builtins.int, discovery_service_port: builtins.int) -> NetworkingHandle:
+    def new(identity: builtins.str, namespace: builtins.str, wire_version: builtins.int, build_id: builtins.str, pre_gate_namespace: typing.Optional[builtins.str], listen_port: builtins.int, discovery_service_port: builtins.int) -> NetworkingHandle:
         r"""
-        Starts this node's networking. It connects only to nodes with the same `namespace` and
-        `wire_version`, and the same `mlx_release` (or none on either side).
+        Starts this node's networking. It connects only to nodes with the same `namespace`,
+        `wire_version` and `build_id`. Exos from before wire versions are recognised under
+        `namespace`, and under `pre_gate_namespace` if given.
         """
     def devices_on_other_versions(self) -> builtins.list[tuple[builtins.list[builtins.str], builtins.str, typing.Optional[builtins.int]]]:
         r"""
         The devices discovery hears in this namespace that can't join, one per device:
         `(addresses, reason, wire_version)`. The reason is "older_exo" (from before wire
-        versions), "wire_version" (another wire version, given), or "mlx_release" (this wire
-        version on another MLX release). A device is listed until its Hellos have stopped for
-        30 s.
+        versions), "wire_version" (another wire version, given), or "build" (this wire version
+        but another build). A device is listed until its Hellos have stopped for 30 s.
         """
     def recv(self) -> typing.Awaitable[FromSwarm]: ...
     async def gossipsub_subscribe(self, topic: builtins.str, high_priority: builtins.bool = False) -> builtins.bool:

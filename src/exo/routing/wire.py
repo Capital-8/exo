@@ -1,49 +1,59 @@
-"""What decides whether two exo nodes can talk: the wire version and the MLX release.
+"""What decides whether two exo nodes can talk: the wire version and the build.
 
-Nodes connect only when they run the same ``WIRE_VERSION`` and compatible MLX releases (see
+Nodes connect only when they run the same ``WIRE_VERSION`` and the same build (see
 ``rust/networking/src/wire.rs``). Every message model is strict (``extra="forbid"``), so nodes
-whose schemas differ can't read each other: a node that meets an event it can't read stalls
-at that index until it restarts, and a node can't read a state snapshot that has a field it
-doesn't know. The ranks of a model on different MLX releases can hang part way through it.
-The package version isn't bumped for every build, so it can't tell builds apart.
+whose schemas differ can't read each other: a node that meets an event it can't read stalls at
+that index until it restarts, and a node can't read a state snapshot that has a field it
+doesn't know. Two builds can also disagree inside a model, between its ranks: MLX, mlx-lm and
+exo's sharding code all change between builds, and a model split across them can hang part
+way through or give wrong tokens. So different builds never cluster; each is told the other
+runs another build instead.
 
 Bump ``WIRE_VERSION`` when what nodes send each other changes. ``wire_schema.py`` keeps a
 snapshot of the schema and a ledger of versions, and a test fails when the code no longer
-matches them; its docstring says what to do. A bump splits clusters: devices with the new
-version join only each other.
+matches them; its docstring says what to do.
 """
 
-import re
+import os
+from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from typing import Final, Literal, final
 
+from exo import __version__
 from exo.utils.pydantic_ext import FrozenModel
 
 WIRE_VERSION: Final = 1
 
-# The cluster name when none is given. Not the package version: the wire version and the MLX
-# release decide which nodes can talk, so builds that can work together find each other,
-# whatever their package version. Give a cluster its own name to keep it apart.
+# The cluster name when none is given. Not the package version: the wire version and the build
+# decide which nodes can talk, and one name for every version lets a node name a device that
+# runs another version, instead of seeing another cluster. Give a cluster its own name to keep
+# it apart.
 DEFAULT_CLUSTER_NAME: Final = "exo"
 
-# The release part of a version: "0.32.4" of "0.32.4.dev20261030+36969c09"
-_RELEASE = re.compile(r"\d+(?:\.\d+)*")
+# Set by the macOS app to its release and commit
+BUILD_ID_ENV: Final = "EXO_BUILD_ID"
 
 
-def mlx_release(installed_version: str | None = None) -> str | None:
-    """The MLX release this node runs, such as "0.32.4", or None without MLX.
+def _installed(distribution: str) -> str:
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return "none"
 
-    Only the release counts: one exo build installs a development build of MLX on macOS
-    ("0.32.4.dev20261030+36969c09") and the published release on Linux ("0.32.4"), and its
-    Macs and Linux machines must still connect.
+
+def build_id(environ: Mapping[str, str] = os.environ) -> str:
+    """Which build of exo this node runs: nodes connect only to the same build.
+
+    The macOS app passes its own in ``EXO_BUILD_ID``. A source build is named by exo's package
+    version and the exact MLX and mlx-lm versions it runs (a git build's version names its
+    revision), not by a git commit: developers running one lockfile on several machines
+    connect. That assumes source builds of one package version run the same exo code; two
+    checkouts that change what a model's ranks send each other must not run together.
     """
-    if installed_version is None:
-        try:
-            installed_version = version("mlx")
-        except PackageNotFoundError:
-            return None
-    match = _RELEASE.match(installed_version)
-    return match.group(0) if match else installed_version
+    given = environ.get(BUILD_ID_ENV, "").strip()
+    if given:
+        return given
+    return f"exo {__version__}, mlx {_installed('mlx')}, mlx-lm {_installed('mlx-lm')}"
 
 
 @final
@@ -52,6 +62,7 @@ class DeviceOnOtherVersion(FrozenModel):
 
     # Every address it was heard on: one per network interface
     addresses: list[str]
-    reason: Literal["older_exo", "wire_version", "mlx_release"]
-    # Its wire version, when it runs another one
+    # older_exo: from before wire versions; wire_version: another wire version (given);
+    # build: this wire version, but another build
+    reason: Literal["older_exo", "wire_version", "build"]
     wire_version: int | None

@@ -17,6 +17,7 @@ from exo_rs import (
 )
 from loguru import logger
 
+from exo import __version__
 from exo.shared.constants import EXO_NODE_ZID
 from exo.shared.types.common import NodeId
 from exo.utils.channels import Receiver, Sender, channel
@@ -25,7 +26,7 @@ from exo.utils.task_group import TaskGroup
 
 from .connection_message import ConnectionMessage
 from .topics import CONNECTION_MESSAGES, PublishPolicy, TypedTopic
-from .wire import WIRE_VERSION, DeviceOnOtherVersion, mlx_release
+from .wire import DEFAULT_CLUSTER_NAME, WIRE_VERSION, DeviceOnOtherVersion, build_id
 
 
 # A significant current limitation of the TopicRouter is that it is not capable
@@ -120,16 +121,18 @@ class Router:
         listen_port: int,
         discovery_service_port: int,
         wire_version: int = WIRE_VERSION,
-        mlx: str | None = mlx_release(),
+        build: str | None = None,
     ) -> "Router":
-        """Networking that connects only to nodes with the same namespace and wire version,
-        and the same MLX release (or none on either side)."""
+        """Networking that connects only to nodes with the same namespace, wire version and
+        build (this node's, unless given)."""
         return cls(
             handle=NetworkingHandle.new(
                 identity,
                 namespace,
                 wire_version,
-                mlx,
+                build if build is not None else build_id(),
+                # Exos from before wire versions used the package version as the default name
+                __version__ if namespace == DEFAULT_CLUSTER_NAME else None,
                 listen_port,
                 discovery_service_port,
             )
@@ -160,9 +163,7 @@ class Router:
         return [
             DeviceOnOtherVersion(
                 addresses=addresses,
-                reason=cast(
-                    Literal["older_exo", "wire_version", "mlx_release"], reason
-                ),
+                reason=cast(Literal["older_exo", "wire_version", "build"], reason),
                 wire_version=wire_version,
             )
             for addresses, reason, wire_version in self._net.devices_on_other_versions()

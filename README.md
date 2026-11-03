@@ -126,20 +126,20 @@ If a Mac doesn't show up:
 
 EXO checks for updates by itself and tells you when one is ready. You can also use **Check for Updates** in EXO's menu or Settings. A Homebrew installation updates itself the same way.
 
-**Update every Mac in your cluster.** Devices running incompatible versions of exo don't join each other, so a Mac you haven't updated yet can drop out of the cluster until you update it too. Versions that can work together still join.
+**Update every Mac in your cluster.** Devices running different versions of exo don't join each other, so a Mac you haven't updated yet drops out of the cluster until you update it too. Mixing versions in one cluster isn't supported.
 
 From source, pull the latest code, rebuild the dashboard and run `uv sync` again, on every device.
 
 #### Cluster name
 
-Devices join each other only when they use the same cluster name (in the CLI, the "namespace") and run compatible versions of exo (see below). By default the cluster name is `exo`, the same for every version of exo, so source builds and releases that can work together find each other. The app's Automatic setting uses the app's version as the cluster name instead.
+Devices join each other only when they use the same cluster name (in the CLI, the "namespace") and run the same build of exo (see below). By default the cluster name is `exo`, the same for every version of exo, so a device can say that another one runs a different version instead of not seeing it. The app's Automatic setting uses the app's version as the cluster name instead.
 
 To run separate clusters on one network, for example a test cluster next to your main one, give each cluster its own name:
 
 - in the app: open **Settings** › **Cluster** from the menu bar icon and fill in **Cluster name** (leave it on Automatic for the default);
 - from source: run `uv run exo --namespace my-cluster`, or set `EXO_ZENOH_NAMESPACE=my-cluster`.
 
-Devices also need the same *wire version*, a number exo bumps whenever what devices send each other changes, and the same MLX release (a device without MLX joins any). A custom name doesn't override either, so devices with the same custom name but incompatible versions of exo don't connect; before, they connected and then stopped making progress. A device that sees an incompatible device under its cluster name logs "a device at … runs another version of exo" and lists it at `GET /v1/devices-on-other-versions`. The cluster name, wire version and MLX release in use are logged at startup ("Discovery namespace: …").
+Devices also need the same *wire version*, a number exo bumps whenever what devices send each other changes, and the same *build*: the same app release, or for source builds the same exo package version and the same MLX and mlx-lm versions. Source builds of one package version are assumed to run the same exo code, so developers can run one checkout on several machines. A custom name doesn't override either, so devices with the same custom name but different versions of exo don't connect; before, they connected and then could stop making progress. A device that sees one under its cluster name logs "a device at … runs another version of exo" (or "another build") and lists it at `GET /v1/devices-on-other-versions`. The cluster name, wire version and build in use are logged at startup ("Discovery namespace: …").
 
 #### Uninstalling the macOS app
 

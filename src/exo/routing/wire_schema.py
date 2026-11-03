@@ -29,18 +29,17 @@ wire), the snapshot records what JSON schema can't show:
   without importing MLX;
 - the zenoh revision in ``Cargo.lock``.
 
-Discovery adds the MLX release to the wire version, so nodes on different MLX releases don't
-connect either. Not covered, so bump by hand when they change:
+Discovery also compares builds (``build_id()`` in ``wire.py``), so different app releases never
+connect, nor do source builds whose package, MLX or mlx-lm versions differ. Not covered, so
+bump by hand when they change:
 
 - discovery's packets (a test in ``rust/networking/src/discovery.rs`` pins them);
 - the zenoh key expressions in ``rust/networking/src/swarm.rs``;
 - ``GET /node_id``, which nodes call on each other to check reachability;
-- what an instance's ranks send each other through MLX within one MLX release: the
-  activations and top-k indices in each model's sharding code (pipeline and tensor-parallel
-  layers), and the shape of what ``mx_all_gather_tasks`` gathers;
-- a new build of MLX within one release: only the release ("0.32.4") is in the key, because
-  macOS installs MLX from a git revision and Linux the published release, so two Macs whose
-  MLX differs only in git revision still connect.
+- between source builds of one package version: what an instance's ranks send each other
+  through MLX (the activations and top-k indices in each model's sharding code, and the shape
+  of what ``mx_all_gather_tasks`` gathers). A source build is named by its package and runner
+  versions, not its commit, so two checkouts that differ only in that code still connect.
 """
 
 import argparse

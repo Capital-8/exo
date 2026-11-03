@@ -153,7 +153,7 @@ from exo.master.placement import (
 )
 from exo.master.placement import place_instance as get_instance_placements
 from exo.routing.event_router import NodeEventReceiver
-from exo.routing.wire import WIRE_VERSION, DeviceOnOtherVersion, mlx_release
+from exo.routing.wire import WIRE_VERSION, DeviceOnOtherVersion, build_id
 from exo.shared.apply import apply
 from exo.shared.constants import (
     ENABLE_DISAGGREGATION,
@@ -852,7 +852,7 @@ class API:
         run another version of exo. This node's view: what its discovery heard."""
         return DevicesOnOtherVersionsResponse(
             wire_version=WIRE_VERSION,
-            mlx_release=mlx_release(),
+            build_id=build_id(),
             devices=self._devices_on_other_versions(),
         )
 
