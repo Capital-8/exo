@@ -1648,6 +1648,9 @@
               "$ref": "#/$defs/NodeTimedOut"
             },
             {
+              "$ref": "#/$defs/NodeLeft"
+            },
+            {
               "$ref": "#/$defs/NodeGatheredInfo"
             },
             {
@@ -2370,11 +2373,22 @@
             "instance_id": {
               "type": "string"
             },
+            "not_before": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "reason": {
               "anyOf": [
                 {
                   "enum": [
                     "NodeLost",
+                    "NodeLeft",
                     "UserStopped",
                     "Duplicate"
                   ],
@@ -2567,6 +2581,9 @@
             },
             {
               "$ref": "#/$defs/NodeTimedOut"
+            },
+            {
+              "$ref": "#/$defs/NodeLeft"
             },
             {
               "$ref": "#/$defs/NodeGatheredInfo"
@@ -3275,6 +3292,32 @@
       "type": "object",
       "x-extra": "forbid",
       "x-strict": true
+    },
+    "NodeLeft": {
+      "additionalProperties": false,
+      "properties": {
+        "NodeLeft": {
+          "additionalProperties": false,
+          "properties": {
+            "event_id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "node_id"
+          ],
+          "type": "object",
+          "x-extra": "forbid",
+          "x-strict": true
+        }
+      },
+      "required": [
+        "NodeLeft"
+      ],
+      "type": "object"
     },
     "NodeNetworkInfo": {
       "additionalProperties": false,
