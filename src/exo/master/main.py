@@ -7,7 +7,12 @@ from itertools import islice
 import anyio
 from loguru import logger
 
-from exo.master.deployments import place_deployment, reconcile, resume_event
+from exo.master.deployments import (
+    announced,
+    place_deployment,
+    reconcile,
+    resume_event,
+)
 from exo.master.placement import (
     cancel_unnecessary_downloads,
     launch_refusal,
@@ -19,6 +24,7 @@ from exo.routing.event_router import (
     EventRouterClosedResourceError,
 )
 from exo.routing.membership import (
+    GRACE,
     MembershipReader,
     MembershipView,
     instance_is_reachable,
@@ -32,6 +38,7 @@ from exo.shared.request_errors import DEVICE_UNREACHABLE, INSTANCE_GONE_BEFORE_S
 from exo.shared.types.chunks import ErrorChunk, ImageChunk
 from exo.shared.types.commands import (
     AddCustomModelCard,
+    AnnounceDeployments,
     CreateDeployment,
     DeleteCustomModelCard,
     DeleteDeployment,
@@ -105,6 +112,12 @@ from exo.utils.channels import Receiver, Sender
 from exo.utils.event_buffer import MultiSourceBuffer
 from exo.utils.task_group import TaskGroup
 
+# A launch the master learns of from a node (made on the other side of a heal, or one a
+# lagging new master never saw) waits this long for the nodes it last ran on before it may be
+# placed elsewhere: they report their files as soon as they follow the new master, and their
+# links within the 10 s between connection checks. As long as the membership waits for a lost
+# node to come back.
+MERGED_LAUNCH_WAIT = GRACE
 # How often the master looks for nodes to remove and for instances that lost a node. Which
 # nodes are gone, and since when, is the membership's to say (rust/networking/src/
 # membership.rs owns every liveness timer); this only bounds how late the master acts on it.
@@ -445,6 +458,16 @@ class Master:
                                     )
                                     self._expected_ranks[task_id] = ranks
                         case CreateDeployment() if (
+                            command.deployment_id in self.state.removed_deployments
+                        ):
+                            # A late copy of a launch the user has stopped since (sent again,
+                            # to a new master, say): it changes nothing, not even the model's
+                            # other deployments a new launch would replace
+                            logger.info(
+                                f"Deployment {command.deployment_id} was stopped; not "
+                                "launching it again"
+                            )
+                        case CreateDeployment() if (
                             command.deployment_id in self.state.deployments
                         ):
                             logger.info(
@@ -476,10 +499,10 @@ class Master:
                         case CreateDeployment():
                             generated_events.extend(self._create_deployment(command))
                         case DeleteDeployment() if (
-                            command.deployment_id not in self.state.deployments
+                            command.deployment_id in self.state.removed_deployments
                         ):
                             logger.info(
-                                f"Deployment {command.deployment_id} to stop is already gone"
+                                f"Deployment {command.deployment_id} is already stopped"
                             )
                         case DeleteDeployment():
                             generated_events.extend(
@@ -504,6 +527,15 @@ class Master:
                                 resume_event(
                                     self.state.deployments[command.deployment_id],
                                     self.state,
+                                )
+                            )
+                        case AnnounceDeployments():
+                            generated_events.extend(
+                                announced(
+                                    self.state,
+                                    command,
+                                    datetime.now(tz=timezone.utc),
+                                    MERGED_LAUNCH_WAIT,
                                 )
                             )
                         case InstanceBroken() if (
@@ -746,7 +778,12 @@ class Master:
         for deployment_id in replaced:
             logger.info(f"Deployment {deployment_id} is replaced by a new launch")
         return [
-            *(DeploymentRemoved(deployment_id=d) for d in replaced),
+            *(
+                DeploymentRemoved(
+                    deployment_id=d, at=datetime.now(tz=timezone.utc).isoformat()
+                )
+                for d in replaced
+            ),
             DeploymentCreated(
                 deployment=Deployment(
                     deployment_id=command.deployment_id,
@@ -758,7 +795,9 @@ class Master:
         ]
 
     def _delete_deployment(self, deployment_id: DeploymentId) -> list[Event]:
-        """A user's stop: the deployment goes, and its instances with it."""
+        """A user's stop: the deployment goes, and its instances with it. Its tombstone is
+        recorded even when this master doesn't know the deployment (it never saw the launch:
+        a new master that was behind), so a node that has it can't bring it back."""
         now = datetime.now(tz=timezone.utc)
         return [
             *(
@@ -769,7 +808,7 @@ class Master:
                     instance_id, "UserStopped", self.state.tasks, now
                 )
             ),
-            DeploymentRemoved(deployment_id=deployment_id),
+            DeploymentRemoved(deployment_id=deployment_id, at=now.isoformat()),
         ]
 
     def _reconcile_deployments(self) -> None:
